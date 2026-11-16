@@ -1,1 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Household Expense Budget Organizer</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header class="topbar">
+        <h1>Household Expense Budget Organizer</h1>
+        <button id="undo-btn" onclick="handleUndo()" disabled>Undo Last Action</button>
+    </header>
 
+    <!-- Summary Cards -->
+    <section class="summary-grid">
+        <div class="card">
+            <span>Total Income</span>
+            <h2 id="total-income">₱0.00</h2>
+        </div>
+        <div class="card">
+            <span>Total Expenses</span>
+            <h2 id="total-expense">₱0.00</h2>
+        </div>
+        <div class="card">
+            <span>Remaining Balance</span>
+            <h2 id="balance">₱0.00</h2>
+        </div>
+    </section>
+
+    <main class="main-grid">
+        <!-- Left Column: Entry Form & Priority Queue Bills -->
+        <div class="panel">
+            <h3>Add Transaction</h3>
+            <form id="tx-form" onsubmit="handleAddTransaction(event)">
+                <select id="tx-type" required>
+                    <option value="expense">Expense</option>
+                    <option value="income">Income</option>
+                </select>
+                <input type="text" id="tx-category" placeholder="Category (e.g., Utilities, Groceries)" required>
+                <input type="number" id="tx-amount" step="0.01" placeholder="Amount" required>
+                <input type="date" id="tx-date" required>
+                <button type="submit">Add Entry</button>
+            </form>
+
+            <hr>
+            <h3>Upcoming Bills (Priority Queue)</h3>
+            <form id="bill-form" onsubmit="handleAddBill(event)">
+                <input type="text" id="bill-name" placeholder="Bill Name (e.g., Electric)" required>
+                <input type="number" id="bill-amount" step="0.01" placeholder="Amount" required>
+                <input type="date" id="bill-date" required>
+                <button type="submit">Queue Bill</button>
+            </form>
+            <ul id="bill-list"></ul>
+        </div>
+
+        <!-- Right Column: Transaction Ledger & Algorithm Benchmark -->
+        <div class="panel">
+            <div class="ledger-header">
+                <h3>Transaction History</h3>
+                <div>
+                    <button onclick="handleSort('merge')">Merge Sort</button>
+                    <button onclick="handleSort('insertion')">Insertion Sort</button>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Type</th>
+                        <th>Category</th>
+                        <th>Amount</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="tx-table-body"></tbody>
+            </table>
+
+            <hr>
+            <h3>Algorithm Runtime Benchmark</h3>
+            <div class="benchmark-controls">
+                <select id="bench-size">
+                    <option value="100">100 Records</option>
+                    <option value="1000" selected>1,000 Records</option>
+                    <option value="5000">5,000 Records</option>
+                </select>
+                <button onclick="handleBenchmark()">Run Benchmark</button>
+            </div>
+            <p id="bench-result">Select a dataset size and click Run Benchmark.</p>
+        </div>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
