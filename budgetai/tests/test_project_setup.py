@@ -1,6 +1,6 @@
 """Phase 2 tests: the project structure and settings are correct.
 
-These tests do not need Ollama, so they run in about a second.
+These tests run without Groq credentials or network access.
 Run them from the BudgetAI_Model folder with:  pytest
 """
 import importlib
@@ -14,6 +14,7 @@ ROOT = config.PROJECT_ROOT
 REQUIRED_FOLDERS = ["model", "dataset", "evaluation", "budgeting_engine", "tests"]
 REQUIRED_FILES = [
     "model/schemas.py",
+    "model/ai_service.py",
     "model/budgeting_ai.py",
     "model/instructions.txt",
     "dataset/budgeting_examples.jsonl",
@@ -52,7 +53,8 @@ def test_module_imports(module):
 def test_settings_have_sensible_values():
     s = config.settings
     assert s.model_name, "BUDGETAI_MODEL is empty"
-    assert s.ollama_host.startswith(("http://", "https://"))
+    assert s.provider == "groq"
+    assert config.DEFAULTS["BUDGETAI_MODEL"] == "openai/gpt-oss-20b"
     assert len(s.currency) == 3
     assert 0.0 <= s.temperature <= 2.0
     assert s.timeout_seconds > 0
@@ -77,11 +79,17 @@ def test_example_env_lists_every_setting():
         ("BUDGETAI_TEMPERATURE", "5"),
         ("BUDGETAI_TIMEOUT_SECONDS", "0"),
         ("BUDGETAI_CURRENCY", "PESO"),
-        ("OLLAMA_HOST", "localhost:11434"),
-        ("BUDGETAI_CONTEXT_TOKENS", "100"),
+        ("BUDGETAI_PROVIDER", "unknown-provider"),
     ],
 )
 def test_invalid_settings_are_rejected(monkeypatch, name, bad_value):
     monkeypatch.setenv(name, bad_value)
     with pytest.raises(ValueError):
         config.load_settings()
+
+
+def test_key_is_read_from_environment_and_omitted_from_repr(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "synthetic-key-for-config-test")
+    settings = config.load_settings()
+    assert settings.groq_api_key == "synthetic-key-for-config-test"
+    assert settings.groq_api_key not in repr(settings)

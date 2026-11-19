@@ -125,7 +125,7 @@ def test_missing_category_distinguishes_absent_transactions_from_uncovered_perio
     assert "covering the requested month" in uncovered.reply
 
 
-def test_qwen_selects_a_topic_from_compact_verified_aggregates():
+def test_model_selects_a_topic_from_compact_verified_aggregates():
     def route(messages):
         context = json.loads(messages[-1]["content"])
         verified = context["verified_context"]

@@ -1,12 +1,9 @@
-name: BudgetAI checks
+name: BahayBulsa desktop checks
 
 on:
   pull_request:
-    paths: ["budgetai/**", ".github/workflows/budgetai-*.yml"]
   push:
-    branches: [main, codex/budgetai-phase-8]
-    paths: ["budgetai/**", ".github/workflows/budgetai-*.yml"]
-  workflow_call:
+    branches: [main]
 
 permissions:
   contents: read
@@ -42,11 +39,3 @@ jobs:
         run: |
           python -m dataset.validate_dataset
           python -m evaluation.cases --check
-
-      - name: Validate Compose configuration
-        env:
-          BUDGETAI_IMAGE: ghcr.io/example/budgetai:sha-example
-          BUDGETAI_DOMAIN: budget.example.test
-          BUDGETAI_USERNAME: config-check
-          BUDGETAI_PASSWORD_HASH: config-check-only
-        run: docker compose -f deploy/compose.yaml config --quiet

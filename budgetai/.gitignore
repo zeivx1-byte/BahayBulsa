@@ -19,9 +19,6 @@ desktop.ini
 # Output saved by test runs (python try_budgetai.py --save)
 results/
 
-# AI model files (Ollama downloads these; they are far too big for Git)
-*.gguf
-
 # Review documents downloaded from Claude (kept on this computer, not in Git)
 Claude outputs/
 *.pdf

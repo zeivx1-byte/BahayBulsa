@@ -1,21 +1,20 @@
 """Tests for model/budgeting_ai.py using a FAKE model.
 
-The fake client returns prepared answers instead of calling Ollama, so these
+The fake client returns prepared answers instead of calling Groq, so these
 tests are fast, need no GPU, and check BudgetAI's own logic: the request it
 builds, retries, the cleaned advice, the result and the error messages.
 The real model is tried with:  python try_budgetai.py
 """
 import json
 import re
-from types import SimpleNamespace
 
-import ollama
 import pytest
 from pydantic import ValidationError
 
 import config
+from model.ai_service import ModelReply, ModelTimeoutError
 from model.budgeting_ai import (
-    ANSWER_SCHEMA, BudgetAI, BudgetAIError, InvalidModelResponseError, ModelUnavailableError,
+    ANSWER_SCHEMA, MAX_ANSWER_TOKENS, BudgetAI, BudgetAIError, InvalidModelResponseError, ModelUnavailableError,
     load_instructions,
 )
 
@@ -35,7 +34,8 @@ DEFICIT_PROFILE = {**PROFILE, "incomes": [{"name": "Salary", "monthly_amount": 1
 NO_EXPENSES = {"incomes": [{"name": "Salary", "monthly_amount": 25000}]}
 
 
-def advice(flags=(), questions=(), warnings=(), *, summary="A test summary.", savings="Save regularly."):
+def advice(flags=(), questions=(), warnings=(), *, summary="A test summary.", savings="Save regularly.",
+           explanation=None):
     """Build an AI answer in the required JSON format."""
     return json.dumps({
         "summary": summary,
@@ -43,6 +43,7 @@ def advice(flags=(), questions=(), warnings=(), *, summary="A test summary.", sa
         "spending_flags": list(flags),
         "warnings": list(warnings),
         "missing_information": list(questions),
+        "explanation": explanation,
     })
 
 
@@ -50,7 +51,7 @@ GOOD = advice()
 
 
 class FakeClient:
-    """Pretends to be ollama.Client: returns prepared replies in order."""
+    """Returns prepared model replies in order."""
 
     def __init__(self, *replies):
         self.replies = list(replies)
@@ -61,7 +62,7 @@ class FakeClient:
         item = self.replies.pop(0)
         if isinstance(item, Exception):
             raise item
-        return SimpleNamespace(message=SimpleNamespace(content=item))
+        return ModelReply(item)
 
 
 def make_ai(*replies):
@@ -86,21 +87,20 @@ def test_budget_comes_from_python_rules_and_advice_from_the_ai():
     assert result.checks[0].startswith("OK")
 
 
-def test_request_settings_sent_to_ollama():
+def test_request_settings_sent_to_model_transport():
     ai, client = make_ai(GOOD)
     ai.generate_budget(PROFILE)
     call = client.calls[0]
     assert call["model"] == config.settings.model_name
-    assert call["format"]["required"] == ANSWER_SCHEMA["required"]
-    assert call["think"] is False
-    assert call["options"]["temperature"] == config.settings.temperature
-    assert call["options"]["num_ctx"] == config.settings.context_tokens
+    assert call["schema"]["required"] == ANSWER_SCHEMA["required"]
+    assert call["temperature"] == config.settings.temperature
+    assert call["max_completion_tokens"] == MAX_ANSWER_TOKENS
 
 
 def test_model_reply_format_limits_warnings_and_expense_suggestions():
     ai, client = make_ai(GOOD)
     ai.generate_budget(DEFICIT_PROFILE)
-    schema = client.calls[0]["format"]
+    schema = client.calls[0]["schema"]
     assert schema["properties"]["warnings"]["items"]["enum"][0] == (
         "Monthly planning income is PHP 4000.00 short of required spending."
     )
@@ -127,10 +127,40 @@ def test_prompt_contains_facts_final_budget_and_notes():
     assert "- Emergency fund | funded 4000\n" in text
     assert "Total funded: 30000 of 30000 income\nUnallocated after this plan: 0" in text
     assert "ADJUSTABLE EXPENSES:\n- Food | current 8000 | reason: Compare prices before buying.\n\n" in text
-    assert "HOUSEHOLD: 2 people" in text
     assert "PYTHON NOTES:\n- Because the emergency fund covers less than 1 month" in text
     assert "at least 60% of the 11000.00 left" in text                   # comma removed for the AI
     assert "MISSING DATA:\nnone" in text
+
+
+def test_budget_sections_keep_python_amounts_and_validated_advice():
+    explanation = "Keep the emergency contribution alongside debt repayment to cover unexpected expenses."
+    ai, _ = make_ai(advice(explanation=explanation))
+    result = ai.generate_budget({**PROFILE, "savings_goals": [{
+        "name": "School supplies", "target_amount": 12000, "current_amount": 3000, "months_left": 6,
+    }]})
+    sections = result.sections
+    assert sections.income_overview.planning_income == result.facts.planning_income == 30000
+    assert sections.expense_overview.required == result.facts.required_spending == 19000
+    allocations = {line.name: line for line in sections.recommended_allocations}
+    assert allocations["Rent"].amount == 10000
+    assert allocations["Rent"].percentage_of_planning_income == 33.33
+    assert sum(line.amount for line in sections.recommended_allocations) == result.total_allocated
+    assert sections.financial_goals[0].target == 12000
+    assert sections.financial_goals[0].saved == 3000
+    assert sections.explanation == explanation
+
+
+def test_budget_sections_replace_unverified_figures_and_redact_private_inputs():
+    ai, client = make_ai(advice(explanation="This will give you PHP 5000 more every month."))
+    profile = {**PROFILE, "location": "private address", "notes": "private account holder", "expenses": [
+        {**PROFILE["expenses"][1], "name": "Groceries for household@example.com"},
+    ]}
+    result = ai.generate_budget(profile)
+    request = json.dumps(client.calls[0])
+    assert "private address" not in request and "private account holder" not in request
+    assert "household@example.com" not in request and "[private detail]" in request
+    assert result.advice.explanation is None
+    assert result.sections.explanation == result.advice.savings_advice
 
 
 def test_prompt_numbers_never_use_thousands_commas():
@@ -280,16 +310,16 @@ def test_invalid_json_is_retried_with_some_variety():
     ai, client = make_ai("this is not json", GOOD)
     result = ai.generate_budget(PROFILE)
     assert result.attempts == 2
-    assert client.calls[1]["options"]["temperature"] >= 0.3
+    assert client.calls[1]["temperature"] >= 0.3
 
 
 def test_repeated_decoding_stalls_fall_back_to_the_standard_reply_format():
-    stalled = ollama.ResponseError("prediction aborted, token repeat limit reached", 500)
+    stalled = InvalidModelResponseError("The model returned an incomplete reply.")
     ai, client = make_ai(stalled, stalled, GOOD)
     result = ai.generate_budget(PROFILE)
     assert result.attempts == 3
-    assert client.calls[0]["format"] == client.calls[1]["format"]
-    assert client.calls[2]["format"] == ANSWER_SCHEMA
+    assert client.calls[0]["schema"] == client.calls[1]["schema"]
+    assert client.calls[2]["schema"] == ANSWER_SCHEMA
     assert result.advice.warnings == ["Your emergency fund covers less than one month of required spending."]
 
 
@@ -305,22 +335,18 @@ def test_gives_up_after_three_invalid_answers():
 
 
 # ---------------------------------------------------------------- errors
-def test_ollama_not_running():
-    ai, _ = make_ai(ConnectionError("refused"))
-    with pytest.raises(ModelUnavailableError, match="Open Ollama"):
+def test_budget_propagates_unavailable_model():
+    ai, client = make_ai(ModelUnavailableError("Groq is unavailable."))
+    with pytest.raises(ModelUnavailableError, match="Groq is unavailable"):
         ai.generate_budget(PROFILE)
+    assert len(client.calls) == 1
 
 
-def test_model_not_downloaded():
-    ai, _ = make_ai(ollama.ResponseError("model not found", 404))
-    with pytest.raises(ModelUnavailableError, match="ollama pull"):
+def test_budget_propagates_timeout():
+    ai, client = make_ai(ModelTimeoutError("Groq timed out."))
+    with pytest.raises(ModelTimeoutError, match="Groq timed out"):
         ai.generate_budget(PROFILE)
-
-
-def test_timeout_or_other_failure_gives_clear_message():
-    ai, _ = make_ai(TimeoutError("timed out"))
-    with pytest.raises(BudgetAIError, match="BUDGETAI_TIMEOUT_SECONDS"):
-        ai.generate_budget(PROFILE)
+    assert len(client.calls) == 1
 
 
 def test_invalid_profile_is_rejected_before_calling_the_model():

@@ -4,7 +4,7 @@ How generate_budget() works:
 1-3. Python makes the complete plan (budgeting_engine/planner.py): exact
    facts, missing information, the budget from fixed rules (every amount is
    final and within income), notes and this month's action steps.
-4. The Qwen model, through Ollama, receives the key facts, the final budget
+4. The Groq-hosted model receives the key facts, the final budget
    and Python's notes, and explains them in the AIBudgetAdvice JSON format:
    a summary, personal advice, suggested cuts, warnings and questions.
    An invalid reply is asked again.
@@ -17,32 +17,39 @@ Nothing here changes the model's weights: this is prompt engineering.
 """
 import re
 import time
+from collections import Counter
 from collections.abc import Iterable
 from copy import deepcopy
 from pathlib import Path
 from typing import Union
 
 import httpx
-import ollama
 from pydantic import ValidationError
 
 import config
-from budgeting_engine.calculations import plain
+from budgeting_engine.calculations import money, plain
 from budgeting_engine.insights import key_facts
 from budgeting_engine.planner import make_plan
 from budgeting_engine.validation import (
     adjustable_expenses, clean_ai_advice, data_notes, expense_review_tip, mentions_quantity, partial_plan_summary,
 )
+from model.ai_service import (
+    BudgetAIError as BudgetAIError, GroqAIService, InvalidModelResponseError as InvalidModelResponseError,
+    ModelConfigurationError as ModelConfigurationError, ModelRateLimitError as ModelRateLimitError,
+    ModelTimeoutError as ModelTimeoutError, ModelUnavailableError as ModelUnavailableError, redact_identifiers,
+)
 from model.budget_chat import answer_chat, answer_ledger_chat
 from model.schemas import (
-    AIBudgetAdvice, BudgetPlan, BudgetResult, ChatFocus, ChatRequest, ChatResponse, FinancialProfile, LedgerChatRequest,
-    LedgerChatResponse,
+    AIBudgetAdvice, BudgetAllocationRecommendation, BudgetExpenseOverview, BudgetGoalOverview, BudgetIncomeOverview,
+    BudgetPlan, BudgetPlanSections, BudgetResult, ChatFocus, ChatRequest, ChatResponse, FinancialProfile,
+    LedgerChatRequest, LedgerChatResponse,
 )
 
 TOLERANCE = 0.01          # one centavo
 MAX_FORMAT_ATTEMPTS = 3   # tries to get a reply in the correct JSON format
-MAX_ANSWER_TOKENS = 900   # upper limit on the length of one AI answer
-MAX_CHAT_FOCUS_TOKENS = 160
+MAX_ANSWER_TOKENS = 1400  # includes provider reasoning tokens
+MAX_CHAT_FOCUS_TOKENS = 650
+MAX_ADJUSTABLE_EXPENSES = 6
 RETRY_TEMPERATURE = 0.3   # a little variety on retries, so the answer changes
 ANSWER_SCHEMA = AIBudgetAdvice.model_json_schema()
 CHAT_FOCUS_SCHEMA = ChatFocus.model_json_schema()
@@ -106,14 +113,16 @@ def _reply_format(profile: FinancialProfile, plan: BudgetPlan) -> dict:
     warnings = _verified_warnings(profile, plan)
     fields["warnings"]["maxItems"] = min(3, len(warnings))
     if warnings:
-        fields["warnings"]["items"]["enum"] = [THOUSANDS_COMMA.sub(r"\1", warning) for warning in warnings]
+        fields["warnings"]["items"]["enum"] = list(dict.fromkeys(
+            redact_identifiers(THOUSANDS_COMMA.sub(r"\1", warning)) for warning in warnings[:3]
+        ))
     fields["missing_information"]["maxItems"] = min(3, len(plan.missing_data))
 
-    adjustable = adjustable_expenses(profile)
+    adjustable = adjustable_expenses(profile)[:MAX_ADJUSTABLE_EXPENSES]
     fields["spending_flags"]["maxItems"] = int(bool(adjustable))
     if adjustable:
         flag = schema["$defs"]["SpendingFlag"]["properties"]
-        flag["expense_name"]["enum"] = [expense.name for expense in adjustable]
+        flag["expense_name"]["enum"] = list(dict.fromkeys(redact_identifiers(expense.name) for expense in adjustable))
         flag["reason"]["enum"] = list(dict.fromkeys(expense_review_tip(expense) for expense in adjustable))
     return schema
 
@@ -129,22 +138,6 @@ def _prompt_list(items: Iterable[str], byte_limit: int) -> str:
             break
         lines.append(line)
     return "\n".join(lines) or "none"
-
-
-class BudgetAIError(Exception):
-    """A problem in BudgetAI. The message says what to do."""
-
-
-class ModelUnavailableError(BudgetAIError):
-    """Ollama is unreachable, or the model failed to load."""
-
-
-class ModelTimeoutError(BudgetAIError):
-    """Ollama did not complete the request within the configured timeout."""
-
-
-class InvalidModelResponseError(BudgetAIError):
-    """The model kept answering in an invalid format."""
 
 
 def load_instructions(path: Path, currency: str) -> str:
@@ -163,10 +156,19 @@ class BudgetAI:
 
     def __init__(self, settings=None, client=None):
         self.settings = settings or config.settings
-        self.client = client or ollama.Client(
-            host=self.settings.ollama_host, timeout=self.settings.timeout_seconds
-        )
+        self.client = client if client is not None else GroqAIService(self.settings)
         self.instructions = load_instructions(self.settings.instructions_path, self.settings.currency)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def close(self) -> None:
+        close = getattr(self.client, "close", None)
+        if close is not None:
+            close()
 
     # ------------------------------------------------------------ public
     def generate_budget(self, profile: Union[FinancialProfile, dict]) -> BudgetResult:
@@ -187,14 +189,14 @@ class BudgetAI:
         advice, attempts = self._ask_for_advice(messages, _reply_format(profile, plan))
         advice, cleanup = clean_ai_advice(advice, profile, plan.budget, plan.missing_data, self.settings.currency)
         advice = self._ground_explanation(advice, profile, plan)
-        return self._build_result(plan, advice, cleanup, attempts, time.perf_counter() - start)
+        return self._build_result(profile, plan, advice, cleanup, attempts, time.perf_counter() - start)
 
     def respond_to_chat(self, request: ChatRequest) -> ChatResponse:
         """Reply with verified planner or spending facts, or a separate what-if plan."""
         return answer_chat(request, self.settings.currency, self._choose_chat_focus)
 
     def respond_to_ledger_chat(self, request: LedgerChatRequest) -> LedgerChatResponse:
-        """Answer from the website's request-local financial and conversation context."""
+        """Answer with the ledger and recent conversation supplied for this question."""
         return answer_ledger_chat(request, self.settings.currency, self._choose_chat_focus)
 
     # ------------------------------------------------------------ talking to the model
@@ -231,49 +233,27 @@ class BudgetAI:
         )
 
     def _chat(self, messages: list, temperature: float, reply_format: dict, max_tokens: int = MAX_ANSWER_TOKENS) -> str:
-        """Send one request to Ollama and return the reply text."""
-        model = self.settings.model_name
+        """Send one request and return only the provider's final reply text."""
         try:
             response = self.client.chat(
-                model=model,
+                model=self.settings.model_name,
                 messages=messages,
-                format=reply_format,
-                options={
-                    "temperature": temperature,
-                    "num_ctx": self.settings.context_tokens,
-                    "num_predict": max_tokens,
-                },
-                think=False,
+                schema=reply_format,
+                temperature=temperature,
+                max_completion_tokens=max_tokens,
             )
         except (TimeoutError, httpx.TimeoutException):
             raise ModelTimeoutError(
-                f"Ollama took too long to answer using {model}. Check BUDGETAI_TIMEOUT_SECONDS in .env."
+                "Groq did not answer in time. Check BUDGETAI_TIMEOUT_SECONDS or try again shortly."
             ) from None
         except (ConnectionError, httpx.TransportError):
             raise ModelUnavailableError(
-                f"Cannot reach Ollama at {self.settings.ollama_host}. Open Ollama from the Start menu and try again."
+                "Could not reach Groq. Check your internet connection and try again."
             ) from None
-        except ollama.ResponseError as exc:
-            if exc.status_code == 404:
-                raise ModelUnavailableError(f"Model {model} is not downloaded. Run:  ollama pull {model}") from None
-            error = str(exc.error).lower()
-            if exc.status_code == 504:
-                raise ModelTimeoutError("Ollama timed out. Check BUDGETAI_TIMEOUT_SECONDS in .env.") from None
-            if exc.status_code in {503, 507} or any(phrase in error for phrase in (
-                "failed to load model", "unable to load model", "requires more system memory", "out of memory",
-            )):
-                raise ModelUnavailableError(
-                    f"Ollama could not load {model}. Check available memory and BUDGETAI_CONTEXT_TOKENS."
-                ) from None
-            if "token repeat limit reached" in error:
-                raise InvalidModelResponseError("The model stalled while writing its reply.") from None
-            raise BudgetAIError(f"Ollama returned HTTP {exc.status_code} while using {model}.") from None
-        except Exception as exc:
-            raise BudgetAIError(
-                f"The AI request failed ({type(exc).__name__}: {exc}). "
-                "If it timed out, increase BUDGETAI_TIMEOUT_SECONDS in .env."
-            ) from None
-        return response.message.content or ""
+        content = getattr(response, "content", None)
+        if not isinstance(content, str) or not content.strip():
+            raise InvalidModelResponseError("Groq returned an empty or incomplete reply.")
+        return content
 
     # ------------------------------------------------------------ building the request
     def _build_request(self, profile: FinancialProfile, plan: BudgetPlan) -> str:
@@ -291,9 +271,9 @@ class BudgetAI:
         else:
             budget = "none (no expenses are listed yet)"
         facts_text = _prompt_list(key_facts(profile, facts), 1200)
-        warnings_text = _prompt_list(_verified_warnings(profile, plan), 650)
+        warnings_text = _prompt_list(_verified_warnings(profile, plan)[:3], 650)
         expense_items = (f"{expense.name} | current {plain(expense.monthly_amount)} | reason: {expense_review_tip(expense)}"
-                         for expense in adjustable_expenses(profile))
+                         for expense in adjustable_expenses(profile)[:MAX_ADJUSTABLE_EXPENSES])
         expense_text = _prompt_list(expense_items, 650)
         notes_text = _prompt_list(notes, 450)
         missing_text = _prompt_list(missing, 450)
@@ -306,11 +286,6 @@ class BudgetAI:
                 "tight": "Required spending is covered and little remains for other priorities.",
                 "stable": "Required spending is covered. Refer to priorities shown in the final budget.",
             }[facts.situation]
-        household = ", ".join(part for part in (
-            f"{profile.household_size} people" if profile.household_size else "",
-            profile.location or "",
-            f"note from the user: {profile.notes}" if profile.notes else "",
-        ) if part) or "no details given"
         prompt = (
             f"Explain this household's monthly budget. All amounts are in {cur}.\n\n"
             f"SITUATION: {facts.situation}"
@@ -322,11 +297,10 @@ class BudgetAI:
             f"ADJUSTABLE EXPENSES:\n{expense_text}\n\n"
             f"VERIFIED WARNINGS:\n{warnings_text}\n\n"
             f"PYTHON NOTES:\n{notes_text}\n\n"
-            f"MISSING DATA:\n{missing_text}\n\n"
-            f"HOUSEHOLD: {household}"
+            f"MISSING DATA:\n{missing_text}"
         )
         # Reasons and notes are written for people ("4,000.00"); remove those commas for the AI too.
-        return THOUSANDS_COMMA.sub(r"\1", prompt)
+        return redact_identifiers(THOUSANDS_COMMA.sub(r"\1", prompt))
 
     # ------------------------------------------------------------ the result
     def _ground_explanation(self, advice: AIBudgetAdvice, profile: FinancialProfile, plan: BudgetPlan) -> AIBudgetAdvice:
@@ -366,9 +340,16 @@ class BudgetAI:
                 else:
                     savings = "Follow the budget's savings amounts. To save more, identify a cost to reduce or income to add first."
 
-        return advice.model_copy(update={"summary": summary, "savings_advice": savings, "warnings": warnings})
+        explanation = advice.explanation
+        if explanation and (mentions_quantity(explanation) or _assumes_unallocated_money(explanation)):
+            explanation = None
+        if explanation is not None and (not explanation.strip() or facts.situation == "incomplete"):
+            explanation = None
+        return advice.model_copy(update={"summary": summary, "savings_advice": savings, "warnings": warnings,
+                                         "explanation": explanation})
 
-    def _build_result(self, plan: BudgetPlan, advice, cleanup, attempts, seconds) -> BudgetResult:
+    def _build_result(self, profile: FinancialProfile, plan: BudgetPlan, advice: AIBudgetAdvice,
+                      cleanup: list[str], attempts: int, seconds: float) -> BudgetResult:
         cur = self.settings.currency
         facts = plan.facts
         within = plan.total_allocated <= facts.planning_income + TOLERANCE
@@ -394,6 +375,33 @@ class BudgetAI:
             currency=cur, facts=facts, budget=plan.budget, total_allocated=plan.total_allocated,
             unallocated=plan.unallocated, unfunded=plan.unfunded, within_income=within, is_partial=plan.is_partial,
             rule_notes=plan.rule_notes + cleanup, action_steps=plan.action_steps, checks=checks,
-            missing_data=plan.missing_data, advice=advice, model=self.settings.model_name,
+            missing_data=plan.missing_data, advice=advice, sections=_plan_sections(profile, plan, advice),
+            model=self.settings.model_name,
             attempts=attempts, seconds=round(seconds, 1),
         )
+
+
+def _plan_sections(profile: FinancialProfile, plan: BudgetPlan, advice: AIBudgetAdvice) -> BudgetPlanSections:
+    facts = plan.facts
+    goal_amounts = {line.name: line.amount for line in plan.budget if line.category == "savings_goal"}
+    goal_counts = Counter(goal.name for goal in profile.savings_goals)
+    return BudgetPlanSections(
+        summary=advice.summary,
+        income_overview=BudgetIncomeOverview(monthly_income=facts.total_income, planning_income=facts.planning_income),
+        expense_overview=BudgetExpenseOverview(
+            monthly_estimate=facts.total_expenses, fixed=facts.fixed_expenses, variable=facts.variable_expenses,
+            required=facts.required_spending, minimum_debt_payments=facts.minimum_debt_payments,
+        ),
+        recommended_allocations=[BudgetAllocationRecommendation(
+            name=line.name, category=line.category, amount=line.amount,
+            percentage_of_planning_income=money(line.amount / facts.planning_income * 100) if facts.planning_income else 0,
+        ) for line in plan.budget],
+        savings_recommendations=advice.savings_advice,
+        spending_adjustments=advice.spending_flags,
+        financial_goals=[BudgetGoalOverview(
+            name=goal.name, target=goal.target_amount, saved=goal.current_amount,
+            planned_monthly_contribution=(goal_amounts.get(f"Savings goal: {goal.name}", 0)
+                                          if goal_counts[goal.name] == 1 else None),
+        ) for goal in profile.savings_goals],
+        explanation=advice.explanation or advice.savings_advice,
+    )

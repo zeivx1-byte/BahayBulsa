@@ -143,6 +143,7 @@ class AIBudgetAdvice(BaseModel):
     spending_flags: list[SpendingFlag]
     warnings: list[str]
     missing_information: list[str]
+    explanation: str | None = Field(default=None, max_length=600)
 
 
 # ---------------------------------------------------------------- facts, budget, result
@@ -201,6 +202,46 @@ class BudgetPlan(BaseModel):
     missing_data: list[str]
 
 
+class BudgetIncomeOverview(BaseModel):
+    monthly_income: float
+    planning_income: float
+
+
+class BudgetExpenseOverview(BaseModel):
+    monthly_estimate: float
+    fixed: float
+    variable: float
+    required: float
+    minimum_debt_payments: float
+
+
+class BudgetAllocationRecommendation(BaseModel):
+    name: str
+    category: AllocationCategory
+    amount: float
+    percentage_of_planning_income: float
+
+
+class BudgetGoalOverview(BaseModel):
+    name: str
+    target: float
+    saved: float
+    planned_monthly_contribution: float | None
+
+
+class BudgetPlanSections(BaseModel):
+    """Presentation fields built from the verified plan and validated advice."""
+
+    summary: str
+    income_overview: BudgetIncomeOverview
+    expense_overview: BudgetExpenseOverview
+    recommended_allocations: list[BudgetAllocationRecommendation]
+    savings_recommendations: str
+    spending_adjustments: list[SpendingFlag]
+    financial_goals: list[BudgetGoalOverview]
+    explanation: str
+
+
 class BudgetResult(BaseModel):
     """What BudgetAI returns: Python's budget, explained by the AI."""
 
@@ -217,6 +258,7 @@ class BudgetResult(BaseModel):
     checks: list[str]
     missing_data: list[str]
     advice: AIBudgetAdvice
+    sections: BudgetPlanSections | None = None
     model: str
     attempts: int
     seconds: float
@@ -301,7 +343,7 @@ class ChatResponse(BaseModel):
 
 
 class ChatMemory(_Strict):
-    """Server-owned reference to the last verified topic, with no financial values."""
+    """Reference to the last verified topic, with no financial values."""
 
     topic: Literal[
         "spending", "largest_category", "transaction", "expense_trend", "spending_comparison", "income",
@@ -331,10 +373,10 @@ class LedgerChatResponse(ChatResponse):
 
 
 class ChatFocus(_Strict):
-    """The model selects a validated topic and optional reference. Python writes the reply."""
+    """Select a verified topic or supply conversational guidance without calculations."""
 
     topic: Literal[
-        "summary", "line", "remaining", "next_steps", "missing_information", "clarify", "off_topic",
+        "summary", "line", "remaining", "next_steps", "missing_information", "clarify", "off_topic", "conversation",
         "spending", "largest_category", "category_limit", "spending_comparison", "expense_trend",
         "reduce_expenses", "savings_goal", "unusual_spending", "transaction", "monthly_budget",
         "income", "income_and_expenses", "upcoming_bills", "recurring_bills",
@@ -343,3 +385,4 @@ class ChatFocus(_Strict):
     target_index: int | None = Field(default=None, ge=0)
     period: Literal["current", "previous"] = "current"
     detail: Literal["concise", "breakdown"] = "concise"
+    reply: str | None = Field(default=None, max_length=800)

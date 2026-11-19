@@ -1,50 +1,8 @@
-const isBrowserPreview = window.location.pathname.startsWith('/preview/');
-
-async function requestJson(path, method = 'GET', body) {
-    const options = { method };
-    if (body !== undefined) {
-        options.headers = { 'Content-Type': 'application/json' };
-        options.body = JSON.stringify(body);
-    }
-
-    let response;
-    try {
-        response = await fetch(path, options);
-    } catch {
-        throw new Error('Could not reach BahayBulsa. Check that the server is running and try again.');
-    }
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-        const detail = payload?.detail;
-        const message = typeof detail === 'string' ? detail : detail?.message || detail?.[0]?.msg;
-        throw new Error(message || 'The request could not be completed. Please try again.');
-    }
-    return payload;
-}
-
-const browserDashboard = {
-    get_dashboard_data: () => requestJson('/api/dashboard'),
-    add_transaction: (category, amount, type, date) => requestJson('/api/dashboard/transactions', 'POST', {
-        category, amount: Number(amount), type, date
-    }),
-    delete_transaction: (id) => requestJson(`/api/dashboard/transactions/${id}`, 'DELETE'),
-    undo_last_action: () => requestJson('/api/dashboard/undo', 'POST', {}),
-    add_upcoming_bill: (name, amount, dueDate) => requestJson('/api/dashboard/bills', 'POST', {
-        name, amount: Number(amount), due_date: dueDate, recurring: document.getElementById('bill-recurring').checked
-    }),
-    sort_transactions: (algorithm) => requestJson('/api/dashboard/sort', 'POST', { algorithm }),
-    benchmark_runtime: (size) => requestJson('/api/dashboard/benchmark', 'POST', { dataset_size: Number(size) })
-};
-
-function dashboardApi() {
-    return isBrowserPreview ? browserDashboard : window.pywebview.api;
-}
-
 async function runDashboardAction(action) {
     const error = document.getElementById('dashboard-error');
     error.hidden = true;
     try {
-        return await action(dashboardApi());
+        return await action(window.pywebview.api);
     } catch (err) {
         error.textContent = err.message;
         error.hidden = false;
@@ -84,7 +42,7 @@ function renderDashboard(data) {
         const item = document.createElement('li');
         const name = document.createElement('strong');
         name.textContent = bill.name;
-        item.append(`${bill.due_date} — `, name, `: ₱${bill.amount.toFixed(2)}${bill.recurring ? ' monthly' : ''}`);
+        item.append(`${bill.due_date} — `, name, `: ₱${bill.amount.toFixed(2)}`);
         billList.append(item);
     }
 }
@@ -135,174 +93,12 @@ async function handleBenchmark() {
         `Dataset: ${result.dataset_size} | Merge Sort: ${result.merge_sort_ms} ms | Insertion Sort: ${result.insertion_sort_ms} ms`;
 }
 
-const ACCOUNT_CHANGED = 'bahaybulsa-account-changed';
-
-async function loadAccount() {
-    const status = document.getElementById('account-status');
-    const error = document.getElementById('account-error');
-    try {
-        const { username } = await requestJson('/api/account');
-        status.textContent = username ? `Signed in as ${username}` : 'Sign in or create an account';
-        document.getElementById('account-form').hidden = Boolean(username);
-        document.getElementById('account-logout').hidden = !username;
-    } catch (err) {
-        error.textContent = err.message;
-        error.hidden = false;
-    }
-}
-
-function refreshIdentity() {
-    document.body.hidden = true;
-    window.location.reload();
-}
-
-async function changeAccount(action, body) {
-    const account = document.getElementById('browser-account');
-    const error = document.getElementById('account-error');
-    const controls = account.querySelectorAll('button, input');
-    controls.forEach(control => { control.disabled = true; });
-    error.hidden = true;
-    account.setAttribute('aria-busy', 'true');
-    try {
-        await requestJson(`/api/account/${action}`, 'POST', body);
-        try {
-            localStorage.setItem(ACCOUNT_CHANGED, String(Date.now()));
-        } catch {
-            // A same-tab reload also works when browser storage is disabled.
-        }
-        refreshIdentity();
-    } catch (err) {
-        error.textContent = err.message;
-        error.hidden = false;
-    } finally {
-        document.getElementById('account-password').value = '';
-        controls.forEach(control => { control.disabled = false; });
-        account.removeAttribute('aria-busy');
-    }
-}
-
-function handleAccount(event) {
-    event.preventDefault();
-    const username = document.getElementById('account-username').value.trim();
-    const password = document.getElementById('account-password').value;
-    return changeAccount(event.submitter?.value || 'login', { username, password });
-}
-
-const budgetCategories = [
-    'housing', 'food', 'utilities', 'transportation', 'health', 'education',
-    'insurance_contributions', 'family_support', 'personal_care', 'shopping',
-    'dining_out', 'entertainment', 'subscriptions', 'other'
-];
-let budgetRead = 0;
-
-function setupBudget() {
-    const now = new Date();
-    const month = document.getElementById('budget-month');
-    month.value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const container = document.getElementById('budget-category-limits');
-    for (const category of budgetCategories) {
-        const label = document.createElement('label');
-        const amount = document.createElement('input');
-        amount.id = `budget-category-${category}`;
-        amount.type = 'number';
-        amount.min = '0';
-        amount.max = '100000000';
-        amount.step = '0.01';
-        label.htmlFor = amount.id;
-        const name = category.replaceAll('_', ' ');
-        label.textContent = `${name[0].toUpperCase()}${name.slice(1)} (₱)`;
-        container.append(label, amount);
-    }
-    month.addEventListener('change', loadBudget);
-    document.getElementById('budget-form').addEventListener('submit', handleBudget);
-}
-
-function renderBudget(budget) {
-    document.getElementById('budget-limit').value = budget.monthly_budget ?? '';
-    for (const category of budgetCategories) {
-        document.getElementById(`budget-category-${category}`).value = budget.category_limits[category] ?? '';
-    }
-    document.getElementById('goal-name').value = budget.savings_goal?.name ?? '';
-    document.getElementById('goal-target').value = budget.savings_goal?.target_amount ?? '';
-    document.getElementById('goal-saved').value = budget.savings_goal?.current_amount ?? '';
-}
-
-async function loadBudget() {
-    const read = ++budgetRead;
-    const month = document.getElementById('budget-month').value;
-    const fields = document.getElementById('budget-values');
-    const status = document.getElementById('budget-status');
-    fields.disabled = true;
-    status.classList.remove('status-error');
-    status.textContent = month ? 'Loading budget…' : 'Choose a budget month.';
-    if (!month) return;
-    try {
-        const budget = await requestJson(`/api/dashboard/budget?month=${encodeURIComponent(month)}`);
-        if (read !== budgetRead) return;
-        renderBudget(budget);
-        fields.disabled = false;
-        status.textContent = '';
-    } catch (err) {
-        if (read !== budgetRead) return;
-        status.textContent = err.message;
-        status.classList.add('status-error');
-    }
-}
-
-async function handleBudget(event) {
-    event.preventDefault();
-    const month = document.getElementById('budget-month');
-    const fields = document.getElementById('budget-values');
-    const status = document.getElementById('budget-status');
-    if (fields.disabled) return;
-    const categoryLimits = {};
-    for (const category of budgetCategories) {
-        const amount = document.getElementById(`budget-category-${category}`).value;
-        if (amount !== '') categoryLimits[category] = Number(amount);
-    }
-    const name = document.getElementById('goal-name').value.trim();
-    const target = document.getElementById('goal-target').value;
-    const saved = document.getElementById('goal-saved').value;
-    const hasGoal = name !== '' || target !== '' || saved !== '';
-    if (hasGoal && (!name || target === '' || saved === '')) {
-        document.getElementById('goal-name').closest('details').open = true;
-        status.textContent = 'Enter a name, target, and amount already saved for your goal.';
-        status.classList.add('status-error');
-        return;
-    }
-
-    const limit = document.getElementById('budget-limit').value;
-    fields.disabled = true;
-    month.disabled = true;
-    status.textContent = 'Saving budget…';
-    status.classList.remove('status-error');
-    try {
-        const budget = await requestJson('/api/dashboard/budget', 'PUT', {
-            month: month.value,
-            monthly_budget: limit === '' ? null : Number(limit),
-            category_limits: categoryLimits,
-            savings_goal: hasGoal ? { name, target_amount: Number(target), current_amount: Number(saved) } : null
-        });
-        renderBudget(budget);
-        status.textContent = 'Budget saved.';
-    } catch (err) {
-        status.textContent = err.message;
-        status.classList.add('status-error');
-    } finally {
-        fields.disabled = false;
-        month.disabled = false;
-    }
-}
-
-let chatProfile;
-let demoChatHistory = [];
-
 function updateChatSource() {
     const isDashboard = document.getElementById('chat-source').value === 'dashboard';
     document.getElementById('chat-thread-demo').hidden = isDashboard;
     document.getElementById('chat-thread-dashboard').hidden = !isDashboard;
     document.getElementById('chat-context').textContent = isDashboard
-        ? 'Ask about your posted transactions, saved budget, upcoming bills, or savings goal.'
+        ? 'Ask about your posted transactions, budget plan, upcoming bills, or savings goal.'
         : 'The sample household has ₱30,000 monthly income, ₱10,000 rent, and ₱8,000 for groceries.';
     document.getElementById('chat-message').placeholder = isDashboard
         ? 'How much did I spend this month?'
@@ -331,17 +127,79 @@ function renderChatHistory(source, history) {
     for (const { role, content } of history) appendChatTurn(thread, role, content);
 }
 
+function appendBudgetPlan(turn, plan) {
+    const sections = plan.sections;
+    const formatMoney = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const money = amount => `${plan.currency} ${formatMoney.format(amount)}`;
+    const details = document.createElement('details');
+    const label = document.createElement('summary');
+    label.textContent = 'Budget plan details';
+    details.open = true;
+    details.append(label);
+
+    function addSection(title, lines) {
+        if (!lines.length) return;
+        const heading = document.createElement('h3');
+        heading.textContent = title;
+        const list = document.createElement('ul');
+        for (const line of lines) {
+            const item = document.createElement('li');
+            item.textContent = line;
+            list.append(item);
+        }
+        details.append(heading, list);
+    }
+
+    const income = sections.income_overview;
+    const expenses = sections.expense_overview;
+    addSection('Monthly overview', [
+        `Income ${money(income.monthly_income)}`,
+        `Income available for planning ${money(income.planning_income)}`,
+        `Expenses ${money(expenses.monthly_estimate)}`,
+        `Fixed expenses ${money(expenses.fixed)} and variable expenses ${money(expenses.variable)}`,
+        `Required spending ${money(expenses.required)} including ${money(expenses.minimum_debt_payments)} for minimum debt payments`,
+        `Total allocated ${money(plan.total_allocated)} and unallocated ${money(plan.unallocated)}`,
+    ]);
+    addSection('Recommended allocations', sections.recommended_allocations.map(line => (
+        `${line.name} · ${money(line.amount)} (${line.percentage_of_planning_income}% of planning income)`
+    )));
+    const reductions = sections.spending_adjustments.map(item => (
+        `${item.expense_name} · suggested change from ${money(item.current_amount)} to ${money(item.suggested_amount)}. ${item.reason}`
+    ));
+    addSection('Spending adjustments', reductions);
+    addSection('Savings and emergency fund', [sections.savings_recommendations].filter(Boolean));
+    addSection('Financial goals', sections.financial_goals.map(goal => {
+        const target = `${goal.name} · Target ${money(goal.target)}.`;
+        return goal.planned_monthly_contribution === null ? target
+            : `${target} Planned monthly contribution ${money(goal.planned_monthly_contribution)}.`;
+    }));
+    addSection('How to use this plan', [sections.explanation, ...plan.action_steps, ...plan.missing_data].filter(Boolean));
+    turn.append(details);
+    turn.parentElement.scrollTop = turn.parentElement.scrollHeight;
+}
+
 function setChatBusy(busy) {
-    for (const id of ['chat-message', 'chat-send', 'chat-source', 'chat-reset']) {
+    for (const id of ['chat-message', 'chat-send', 'chat-source', 'chat-reset', 'chat-plan']) {
         document.getElementById(id).disabled = busy;
     }
 }
 
-async function loadDashboardHistory() {
+async function requestDesktopChat(method, ...args) {
+    let result;
+    try {
+        result = await window.pywebview.api[method](...args);
+    } catch {
+        throw new Error('BahayBulsa could not complete the request. Try again.');
+    }
+    if (result.error) throw new Error(result.error);
+    return result;
+}
+
+async function loadChatHistory() {
     const status = document.getElementById('chat-status');
     try {
-        const { history } = await requestJson('/api/preview-chat/history');
-        renderChatHistory('dashboard', history);
+        const { histories } = await requestDesktopChat('get_chat_history');
+        for (const [source, history] of Object.entries(histories)) renderChatHistory(source, history);
     } catch (err) {
         status.textContent = err.message;
         status.classList.add('status-error');
@@ -351,17 +209,13 @@ async function loadDashboardHistory() {
 async function resetChat() {
     const source = document.getElementById('chat-source').value;
     const status = document.getElementById('chat-status');
+    if (document.getElementById('chat-reset').disabled) return;
     setChatBusy(true);
     status.textContent = '';
     status.classList.remove('status-error');
     try {
-        if (source === 'dashboard') {
-            const { history } = await requestJson('/api/preview-chat/reset', 'POST', {});
-            renderChatHistory(source, history);
-        } else {
-            demoChatHistory = [];
-            renderChatHistory(source, demoChatHistory);
-        }
+        const { history } = await requestDesktopChat('reset_chat', source);
+        renderChatHistory(source, history);
         document.getElementById('chat-message').value = '';
     } catch (err) {
         status.textContent = err.message;
@@ -372,14 +226,14 @@ async function resetChat() {
     }
 }
 
-async function handleChat(event) {
+async function handleChat(event, generatePlan = false) {
     event.preventDefault();
     const input = document.getElementById('chat-message');
     const send = document.getElementById('chat-send');
     const status = document.getElementById('chat-status');
     const source = document.getElementById('chat-source').value;
     const thread = document.getElementById(`chat-thread-${source}`);
-    const message = input.value.trim();
+    const message = generatePlan ? 'Create a monthly budget plan.' : input.value.trim();
     if (send.disabled) return;
     if (!message) {
         status.textContent = 'Enter a budget question.';
@@ -388,28 +242,20 @@ async function handleChat(event) {
     }
 
     setChatBusy(true);
-    input.value = '';
+    if (!generatePlan) input.value = '';
     status.textContent = 'Waiting for BudgetAI…';
     status.classList.remove('status-error');
     const pendingTurn = appendChatTurn(thread, 'user', message);
     try {
-        let answer;
-        if (source === 'dashboard') {
-            answer = await requestJson('/api/preview-chat', 'POST', { message });
-        } else {
-            chatProfile ??= await requestJson('/api/demo-profile');
-            answer = await requestJson('/api/chat', 'POST', { profile: chatProfile, message, history: demoChatHistory });
-        }
-        const { reply } = answer;
-        appendChatTurn(thread, 'assistant', reply);
-        if (source === 'demo') {
-            demoChatHistory = [...demoChatHistory, { role: 'user', content: message },
-                { role: 'assistant', content: Array.from(reply).slice(0, 1000).join('') }].slice(-8);
-        }
-        status.textContent = '';
+        const { reply, plan, warning } = generatePlan
+            ? await requestDesktopChat('generate_budget_plan', source)
+            : await requestDesktopChat('ask_budget_ai', source, message);
+        const turn = appendChatTurn(thread, 'assistant', reply);
+        if (plan?.sections) appendBudgetPlan(turn, plan);
+        status.textContent = warning || '';
     } catch (err) {
         pendingTurn.remove();
-        input.value = message;
+        if (!generatePlan) input.value = message;
         status.textContent = err.message;
         status.classList.add('status-error');
     } finally {
@@ -422,30 +268,17 @@ function loadDashboard() {
     return updateDashboard(api => api.get_dashboard_data());
 }
 
-async function setupWebsite() {
+async function setupDesktop() {
     document.getElementById('chat-link').hidden = false;
     document.getElementById('budget-chat').hidden = false;
-    document.getElementById('browser-account').hidden = false;
-    document.getElementById('budget-settings').hidden = false;
-    document.getElementById('bill-recurring-control').hidden = false;
-    document.getElementById('account-form').addEventListener('submit', handleAccount);
-    document.getElementById('account-logout').addEventListener('click', () => changeAccount('logout', {}));
     document.getElementById('chat-form').addEventListener('submit', handleChat);
     document.getElementById('chat-source').addEventListener('change', updateChatSource);
     document.getElementById('chat-reset').addEventListener('click', resetChat);
-    window.addEventListener('storage', event => {
-        if (event.key === ACCOUNT_CHANGED) refreshIdentity();
-    });
+    document.getElementById('chat-plan').addEventListener('click', event => handleChat(event, true));
     updateChatSource();
-    setupBudget();
     setChatBusy(true);
-    await loadDashboard();
-    await Promise.all([loadAccount(), loadBudget(), loadDashboardHistory()]);
+    await Promise.all([loadDashboard(), loadChatHistory()]);
     setChatBusy(false);
 }
 
-if (isBrowserPreview) {
-    setupWebsite();
-} else {
-    window.addEventListener('pywebviewready', loadDashboard);
-}
+window.addEventListener('pywebviewready', setupDesktop);

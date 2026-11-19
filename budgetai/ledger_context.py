@@ -1,12 +1,21 @@
-"""Project an owner-scoped website ledger into the verified BudgetAI chat input."""
+"""Build verified BudgetAI chat input from the desktop ledger."""
 
-from calendar import monthrange
 from datetime import date, timedelta
 from decimal import Decimal
 import re
 from typing import get_args
 
-from model.schemas import ChatMemory, ChatTurn, ExpenseCategory, LedgerChatRequest
+from model.schemas import ChatMemory, ChatTurn, ExpenseCategory, LedgerChatRequest, SavingsGoal
+
+
+CHAT_EXAMPLE_PROFILE = {
+    "incomes": [{"name": "Salary", "monthly_amount": 30000}],
+    "expenses": [
+        {"name": "Rent", "category": "housing", "monthly_amount": 10000},
+        {"name": "Groceries", "category": "food", "monthly_amount": 8000},
+    ],
+    "household_size": 2,
+}
 
 
 _CATEGORIES = frozenset(get_args(ExpenseCategory))
@@ -16,10 +25,6 @@ _CATEGORY_ALIASES = {
     "fuel": "transportation", "fare": "transportation", "transport": "transportation",
     "medicine": "health", "tuition": "education", "restaurant": "dining_out", "takeout": "dining_out",
 }
-_RECURRING_BILLS = re.compile(
-    r"^(?:which|what|show|list)\b.*\b(?:recurring bills|bills (?:that )?(?:repeat monthly|recur|repeat every month))\b",
-    re.IGNORECASE,
-)
 
 
 def prior_month_start(month_start: date) -> date:
@@ -27,8 +32,8 @@ def prior_month_start(month_start: date) -> date:
 
 
 def build_ledger_request(
-    message: str, as_of: date, rows: list[dict], bills: list[dict], preferences: dict,
-    previous_preferences: dict, history: list[dict], memory: dict | None,
+    message: str, as_of: date, rows: list[dict], bills: list[dict], goal: SavingsGoal | None,
+    history: list[ChatTurn], memory: ChatMemory | None,
 ) -> LedgerChatRequest:
     current_start = as_of.replace(day=1)
     previous_start = prior_month_start(current_start)
@@ -60,7 +65,6 @@ def build_ledger_request(
             label, total = monthly_expenses.get(match, (name, Decimal(0)))
             monthly_expenses[match] = label, total + amount
 
-    goal = preferences.get("savings_goal")
     profile = None
     if current_income and len(monthly_expenses) <= 100:
         profile = {
@@ -71,16 +75,12 @@ def build_ledger_request(
         }
     return LedgerChatRequest.model_validate({
         "message": message,
-        "history": [ChatTurn.model_validate(turn) for turn in history[-8:]],
-        "memory": ChatMemory.model_validate(memory) if memory else None,
+        "history": history[-8:],
+        "memory": memory,
         "profile": profile,
         "records": {
             "as_of": as_of, "coverage_start": coverage, "transactions": expenses,
             "income_total": current_income or None, "previous_income_total": previous_income or None,
-            "monthly_budget": preferences.get("monthly_budget"),
-            "category_limits": preferences.get("category_limits", {}),
-            "previous_monthly_budget": previous_preferences.get("monthly_budget"),
-            "previous_category_limits": previous_preferences.get("category_limits", {}),
             "savings_goal": goal,
             "upcoming_bills": _select_bills(message, as_of, bills),
         },
@@ -88,33 +88,14 @@ def build_ledger_request(
 
 
 def _select_bills(message: str, as_of: date, bills: list[dict]) -> list[dict]:
-    recurring_only = bool(_RECURRING_BILLS.search(message))
     upcoming = []
     for row in bills:
-        recurring = row.get("recurring", False)
-        if recurring_only and not recurring:
-            continue
-        day = _upcoming_date(row, as_of)
-        if day is not None:
-            upcoming.append({"name": row["name"][:80].strip(), "due_on": day,
-                             "amount": row["amount"], "recurring": recurring})
+        due_on = date.fromisoformat(row["due_date"])
+        if due_on >= as_of:
+            upcoming.append({"name": row["name"][:80].strip(), "due_on": due_on, "amount": row["amount"]})
 
     def priority(bill: dict):
         matching = re.search(rf"(?<!\w){re.escape(bill['name'])}(?!\w)", message, re.IGNORECASE)
         return not matching, bill["due_on"]
 
     return sorted(upcoming, key=priority)[:500]
-
-
-def _upcoming_date(row: dict, as_of: date) -> date | None:
-    due = date.fromisoformat(row["due_date"])
-    if due >= as_of:
-        return due
-    if not row.get("recurring"):
-        return None
-    year, month = as_of.year, as_of.month
-    candidate = date(year, month, min(due.day, monthrange(year, month)[1]))
-    if candidate >= as_of:
-        return candidate
-    year, month = (year + 1, 1) if month == 12 else (year, month + 1)
-    return date(year, month, min(due.day, monthrange(year, month)[1]))

@@ -1,56 +1,26 @@
 # BahayBulsa
-BahayBulsa is a household budgeting app for tracking income, expenses, and bills. The website supports monthly budgets, local accounts, and BudgetAI chat powered by Qwen3.5 4B through Ollama.
+BahayBulsa is a desktop app for tracking household income, expenses, and bills. BudgetAI uses Groq GPT-OSS 20B for chat and monthly budget recommendations. The built-in Python planner calculates the amounts.
 
-## BudgetAI backend
+## Run the desktop app on Windows
 
-The [BudgetAI API](budgetai/README.md) provides budget planning and budget chat.
-The [deployment guide](budgetai/deploy/README.md) covers the GitHub release and
-the Linux server that runs the API.
+Get a key from [Groq API Keys](https://console.groq.com/keys). If you do not have `budgetai/.env`, copy `budgetai/.env.example` to that name. Open `budgetai/.env` and set `GROQ_API_KEY` to your key. Existing `.env` files can be edited in place. Keep the file private.
 
-## Run the website and chat locally
+From the BahayBulsa checkout root, run these commands in PowerShell with Python 3.10 or newer.
 
-Start Ollama and install `qwen3.5:4b-q4_K_M`. Then run these commands from the
-BahayBulsa repository root in your Python 3.13 environment.
-
-```sh
-python -m pip install -r budgetai/requirements.txt
-python -B -m uvicorn --app-dir budgetai browser_preview:app --host 127.0.0.1 --port 8080 --no-access-log
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r budgetai/requirements.txt pywebview
+.\.venv\Scripts\python.exe main.py
 ```
 
-Open the [local BahayBulsa website](http://127.0.0.1:8080/preview/). Create a local
-account to save your dashboard and recent chat across restarts. Guest entries are
-temporary. Add dated transactions, save a monthly limit under **Monthly Budget**,
-and open **Chat with BudgetAI**. Use **My dashboard** for your own records and
-**Sample household** for examples. **New chat** clears the selected conversation.
+Open **Chat with BudgetAI** and use **My dashboard** for your entries or **Sample household** to try the assistant. Choose **Generate budget plan** for a plan with Python-calculated allocations and AI recommendations. The dashboard plan estimates monthly allocations from entries posted so far this month. Add dated income and expense entries to improve that estimate. The desktop ledger stores a savings target and has no field for the current savings balance.
 
-Signed-in data is stored in `budgetai/results/bahaybulsa-web.sqlite3`. Set
-`BAHAYBULSA_DB_PATH` to use a different SQLite file. Keep that file private and
-back it up with SQLite's backup command or while the server is stopped. The
-desktop app continues to use its existing `data/transactions.json`.
-
-The website retrieves the signed-in account's current and prior month of posted
-transactions, saved limits, and relevant bills and savings goal. Chat can answer
-spending questions as soon as you have posted expenses. For trends, add prior
-month records. The site saves the eight latest dashboard chat turns and a short
-reference for follow-up questions.
-
-## Try BahayBulsa in GitHub Codespaces
-
-1. [Create a Codespace from BahayBulsa's default branch](https://codespaces.new/zeivx1-byte/BahayBulsa).
-2. Wait for setup to install the Python dependencies, download Qwen3.5 4B into Ollama, and start BahayBulsa. The first start takes longer because it downloads the model.
-3. In the Codespace, open **Ports** and use **Open in Browser** on **8080 · BahayBulsa preview**. Keep the port **Private**.
-4. Open **Chat with BudgetAI** and choose **Sample household** to try the rent example. To test with dated entries, create a BahayBulsa account in that Codespace and choose **My dashboard**.
-
-If port 8080 is missing or the page stops responding after a restart, run
-`bash .devcontainer/start-preview.sh` in the Codespace terminal. The script creates
-the Python virtual environment when needed and installs dependencies before
-starting the website. The model runs inside the Codespace, so its speed depends
-on the Codespace's CPU and memory.
-Each Codespace has its own website database. Stop the Codespace when finished.
+Desktop transactions are stored in `data/transactions.json`. Each chat source keeps its eight most recent turns locally in `data/chat_history.json`. **New chat** clears the selected conversation. AI requests can send the question, recent context, and relevant financial figures to Groq. The API key stays in Python, and the full local ledger remains on the device. [Groq data controls](https://console.groq.com/docs/your-data)
 
 ## Project layout
 
 - `web/` contains the dashboard and chat interface.
-- `budgetai/browser_preview.py` serves the website and its account, dashboard, and chat routes. `website_store.py` handles the website's SQLite storage.
-- `budgetai/model/` contains the Ollama integration and chat logic. `budgetai/budgeting_engine/` contains the financial calculations.
-- `main.py` starts the existing desktop app using the files in `web/`.
+- `main.py` opens the desktop window with PyWebView.
+- `desktop_ai.py` connects the desktop app to BudgetAI and saves local chat history.
+- `storage.py` loads and saves the desktop transaction ledger.
+- `budgetai/` contains the [planner and Groq integration](budgetai/README.md).

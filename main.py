@@ -8,10 +8,9 @@ class BudgetOrganizerAPI:
     Manages the transaction ledger, upcoming bills, and summary totals.
     """
 
-    def __init__(self, *, persist=True):
+    def __init__(self):
         # 1. Load saved records from local JSON storage
-        self.persist = persist
-        saved_state = load_data() if persist else {}
+        saved_state = load_data()
         self.transactions = saved_state.get("transactions", [])
         self.savings_goal = saved_state.get("savings_goal", 10000.0)
         self._next_transaction_id = max((tx["id"] for tx in self.transactions), default=0) + 1
@@ -123,28 +122,35 @@ class BudgetOrganizerAPI:
 
     def _persist(self):
         """Saves current transactions and savings goal to disk."""
-        if self.persist:
-            save_data({
-                "transactions": self.transactions,
-                "savings_goal": self.savings_goal
-            })
+        save_data({
+            "transactions": self.transactions,
+            "savings_goal": self.savings_goal
+        })
 
 
 # ---------------------------------------------------------
 # DESKTOP WINDOW ENTRY POINT
 # ---------------------------------------------------------
 if __name__ == "__main__":
+    from pathlib import Path
+    import sys
+
     import webview
 
-    api = BudgetOrganizerAPI()
+    app_dir = Path(__file__).resolve().parent
+    # Load the BudgetAI modules bundled with the desktop app.
+    sys.path.insert(0, str(app_dir / "budgetai"))
+    from desktop_ai import DesktopBudgetOrganizerAPI
+
+    api = DesktopBudgetOrganizerAPI()
 
     window = webview.create_window(
         title="Household Expense Budget Organizer",
-        url="web/index.html",
+        url=str(app_dir / "web" / "index.html"),
         js_api=api,
         width=1150,
         height=750,
         min_size=(900, 600)
     )
 
-    webview.start(debug=True)  # Set debug=False for final submission
+    webview.start()

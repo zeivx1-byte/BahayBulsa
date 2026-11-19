@@ -7,7 +7,6 @@
 import json
 import random
 from decimal import Decimal
-from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -15,6 +14,7 @@ from pydantic import ValidationError
 from budgeting_engine.insights import action_steps, key_facts
 from budgeting_engine.planner import make_plan
 from budgeting_engine.validation import clean_ai_advice, find_missing_data
+from model.ai_service import ModelReply
 from model.budgeting_ai import BudgetAI
 from model.schemas import AIBudgetAdvice, FinancialProfile
 
@@ -25,7 +25,7 @@ class FakeClient:
 
     def chat(self, **kwargs):
         self.calls.append(kwargs)
-        return SimpleNamespace(message=SimpleNamespace(content=self.reply))
+        return ModelReply(self.reply)
 
 
 def ai_reply(summary="A summary.", questions=()):

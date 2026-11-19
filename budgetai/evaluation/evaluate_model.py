@@ -4,7 +4,7 @@ Planner correctness and model quality are measured separately:
 
 - Planner: does Python reproduce each case's expected plan exactly, and does
   the plan pass the dataset's independent checks? (No model is involved.)
-- Model: the real local model explains each plan through BudgetAI. Its raw
+- Model: the Groq model explains each plan through BudgetAI. Its raw
   reply (before Python's clean-up) is scored for valid JSON, factual accuracy,
   contradictions with the budget, spending flags, missing-information
   handling and critical facts (evaluation/scoring.py). The final output the
@@ -31,6 +31,7 @@ import statistics
 import subprocess
 import sys
 import time
+from dataclasses import asdict
 from datetime import datetime
 from importlib import metadata
 from pathlib import Path
@@ -41,7 +42,8 @@ from dataset import validate_dataset as val
 from evaluation import cases as case_files
 from evaluation.scoring import SCORER_VERSION, score_entry
 from model import budgeting_ai
-from model.budgeting_ai import BudgetAI, BudgetAIError, InvalidModelResponseError, ModelUnavailableError
+from model.ai_service import BudgetAIError, GroqAIService, InvalidModelResponseError, ModelRateLimitError
+from model.budgeting_ai import BudgetAI
 from model.schemas import AIBudgetAdvice
 
 ROOT = config.PROJECT_ROOT
@@ -52,7 +54,7 @@ SETS = {
     "challenge": case_files.CHALLENGE_FILE,
 }
 FINGERPRINT_FILES = [
-    "model/instructions.txt", "model/budgeting_ai.py", "model/schemas.py",
+    "model/instructions.txt", "model/ai_service.py", "model/budgeting_ai.py", "model/schemas.py",
     "budgeting_engine/allocation.py", "budgeting_engine/calculations.py", "budgeting_engine/insights.py",
     "budgeting_engine/planner.py", "budgeting_engine/validation.py",
     "evaluation/evaluate_model.py", "evaluation/scoring.py",
@@ -67,7 +69,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 # ------------------------------------------------------------------ recording the model calls
 class RecordingClient:
-    """Wraps the Ollama client and records every chat call (reply, timing, token counts)."""
+    """Record each evaluation call's reply, timing and token counts."""
 
     def __init__(self, inner):
         self.inner = inner
@@ -75,27 +77,19 @@ class RecordingClient:
 
     def chat(self, **kwargs):
         start = time.perf_counter()
-        record = {"attempt": len(self.calls) + 1, "temperature": kwargs.get("options", {}).get("temperature"),
+        record = {"attempt": len(self.calls) + 1, "temperature": kwargs.get("temperature"),
                   "messages": kwargs.get("messages")}
         try:
             response = self.inner.chat(**kwargs)
         except Exception as exc:
-            record.update(seconds=round(time.perf_counter() - start, 3), error=f"{type(exc).__name__}: {exc}")
+            record.update(seconds=round(time.perf_counter() - start, 3), error=f"{type(exc).__name__}: {exc}",
+                          finish_reason=getattr(exc, "finish_reason", None))
             self.calls.append(record)
             raise
         record["seconds"] = round(time.perf_counter() - start, 3)
-        record["content"] = response.message.content or ""
-        for field in ("done_reason", "prompt_eval_count", "eval_count"):
-            record[field] = getattr(response, field, None)
-        for field in ("total_duration", "load_duration", "prompt_eval_duration", "eval_duration"):
-            value = getattr(response, field, None)
-            record[field + "_s"] = round(value / 1e9, 3) if value else None
+        record.update(asdict(response))
         self.calls.append(record)
         return response
-
-    def __getattr__(self, name):          # list(), show() ... go to the real client
-        return getattr(self.inner, name)
-
 
 # ------------------------------------------------------------------ run information
 def sha256(path: Path) -> str:
@@ -114,37 +108,17 @@ def git_info() -> dict:
             "dirty_files": status.splitlines() if status else [], "clean": status == ""}
 
 
-def model_info(client, settings) -> dict:
-    info = {"tag": settings.model_name, "host": settings.ollama_host}
-    try:
-        import httpx
-        info["ollama_version"] = httpx.get(f"{settings.ollama_host}/api/version", timeout=10).json().get("version")
-    except Exception as exc:                   # the run still works; the version is just unknown
-        info["ollama_version"] = f"unknown ({type(exc).__name__})"
-    try:
-        for m in client.list().models:
-            if m.model == settings.model_name:
-                details = m.details
-                info.update(digest=m.digest, size_bytes=m.size,
-                            quantization=getattr(details, "quantization_level", None),
-                            parameter_size=getattr(details, "parameter_size", None),
-                            family=getattr(details, "family", None))
-    except Exception as exc:
-        info["digest"] = f"unknown ({type(exc).__name__})"
-    return info
-
-
 def run_settings(settings) -> dict:
     return {"temperature": settings.temperature, "retry_temperature": budgeting_ai.RETRY_TEMPERATURE,
-            "num_ctx": settings.context_tokens, "num_predict": budgeting_ai.MAX_ANSWER_TOKENS,
-            "max_format_attempts": budgeting_ai.MAX_FORMAT_ATTEMPTS, "think": False,
+            "max_completion_tokens": budgeting_ai.MAX_ANSWER_TOKENS,
+            "max_format_attempts": budgeting_ai.MAX_FORMAT_ATTEMPTS,
             "format": "AIBudgetAdvice JSON schema", "timeout_seconds": settings.timeout_seconds,
             "currency": settings.currency}
 
 
 def environment() -> dict:
     versions = {}
-    for package in ("ollama", "pydantic", "httpx"):
+    for package in ("groq", "pydantic", "httpx"):
         try:
             versions[package] = metadata.version(package)
         except metadata.PackageNotFoundError:
@@ -185,9 +159,11 @@ def evaluate_case(ai: BudgetAI, recorder: RecordingClient, rec: dict, set_name: 
     status, error, result = "ok", None, None
     try:
         result = ai.generate_budget(rec["profile"])
+    except ModelRateLimitError:
+        raise
     except InvalidModelResponseError as exc:
         status, error = "invalid_json", str(exc)
-    except (ModelUnavailableError, BudgetAIError) as exc:
+    except BudgetAIError as exc:
         status, error = "runtime_error", str(exc)
     entry["seconds"] = round(time.perf_counter() - start, 3)
     entry.update(status=status, error=error)
@@ -244,7 +220,7 @@ def summarize(entries: list, meta: dict) -> dict:
             "within_attempts": {"pass": sum(e["status"] == "ok" for e in ran), "of": len(ran),
                                 "failed_ids": [e["id"] for e in ran if e["status"] != "ok"]},
             "retries": sum(max(0, e["attempts"] - 1) for e in ran),
-            "length_cut": [e["id"] for e in ran if any(c.get("done_reason") == "length" for c in e["calls"])],
+            "length_cut": [e["id"] for e in ran if any(c.get("finish_reason") == "length" for c in e["calls"])],
         },
     }
     for side in ("model", "system"):
@@ -292,7 +268,10 @@ def summarize(entries: list, meta: dict) -> dict:
 
     seconds = [e["seconds"] for e in ran]
     calls = [c for e in ran for c in e["calls"]]
-    tps = [c["eval_count"] / c["eval_duration_s"] for c in calls if c.get("eval_count") and c.get("eval_duration_s")]
+    prompt_tokens = [c["input_tokens"] for c in calls if c.get("input_tokens")]
+    output_tokens = [c["output_tokens"] for c in calls if c.get("output_tokens")]
+    tps = [c["output_tokens"] / c["completion_seconds"] for c in calls
+           if c.get("output_tokens") and c.get("completion_seconds")]
     if seconds:
         ordered = sorted(seconds)
         summary["timing"] = {
@@ -301,11 +280,8 @@ def summarize(entries: list, meta: dict) -> dict:
             "p90_s": round(ordered[min(len(ordered) - 1, int(0.9 * len(ordered)))], 2), "max_s": round(max(seconds), 2),
             "calls": len(calls),
             "tokens_per_s_mean": round(statistics.mean(tps), 1) if tps else None,
-            "output_tokens_mean": round(statistics.mean(c["eval_count"] for c in calls if c.get("eval_count")), 1)
-            if tps else None,
-            "prompt_tokens_mean": round(statistics.mean(c["prompt_eval_count"] for c in calls
-                                                        if c.get("prompt_eval_count")), 1)
-            if any(c.get("prompt_eval_count") for c in calls) else None,
+            "output_tokens_mean": round(statistics.mean(output_tokens), 1) if output_tokens else None,
+            "prompt_tokens_mean": round(statistics.mean(prompt_tokens), 1) if prompt_tokens else None,
         }
     return summary
 
@@ -332,11 +308,14 @@ def failure_reasons(e: dict, side: str) -> list:
 def write_report(run_dir: Path, meta: dict, summary: dict) -> Path:
     m, s = meta, summary
     git = m["git"]
+    model = m["model"]
+    model_label = f"{model['provider']} " if model.get("provider") else ""
+    model_label += f"`{model['tag']}`"
+    if model.get("digest"):
+        model_label += f" (digest {model['digest'][:12]})"
     lines = [f"# BudgetAI evaluation: {m['set']} ({m['label']})", "",
              f"- Started {m['started_at']}, finished {m.get('finished_at')}, scorer {m['scorer_version']}",
-             f"- Model `{m['model']['tag']}` (digest {str(m['model'].get('digest'))[:12]}, "
-             f"{m['model'].get('parameter_size')}, {m['model'].get('quantization')}), "
-             f"Ollama {m['model'].get('ollama_version')}",
+             f"- Model {model_label}",
              f"- Settings: {json.dumps(m['settings'])}",
              f"- Git {git['commit'] or 'unknown'} on {git['branch'] or 'unknown'}; "
              + ("clean" if git["clean"] else
@@ -382,12 +361,12 @@ def write_report(run_dir: Path, meta: dict, summary: dict) -> Path:
             lines.append(f"| {row['id']} | {cells[0]} | {cells[1]} |")
     if s.get("timing"):
         t = s["timing"]
-        lines += ["", "## Response time (warm model)",
+        lines += ["", "## Response time",
                   f"- {t['cases']} cases, {t['calls']} model calls: mean {t['mean_s']} s, median {t['median_s']} s, "
                   f"90th percentile {t['p90_s']} s, max {t['max_s']} s, total {t['total_s']} s",
                   f"- Output {t['output_tokens_mean']} tokens per call on average at {t['tokens_per_s_mean']} tokens/s; "
                   f"prompt {t['prompt_tokens_mean']} tokens",
-                  f"- Warm-up (model load, not counted): {m.get('warmup', {}).get('seconds')} s"]
+                  f"- Warm-up request (excluded from totals): {m.get('warmup', {}).get('seconds')} s"]
     lines += ["", "## Failed cases (model)", ""]
     for e in case_files.load(run_dir / "cases.jsonl"):
         sc = e.get("scores")
@@ -417,14 +396,18 @@ def run_set(set_name: str, label: str, ai: BudgetAI, recorder: RecordingClient, 
     done = {e["id"] for e in case_files.load(cases_path)} if cases_path.exists() else set()
     meta_path = run_dir / "run.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    model = {"tag": ai.settings.model_name, "provider": ai.settings.provider}
     if meta:
+        prior_model = meta.get("model", {})
+        if (prior_model.get("tag"), prior_model.get("provider")) != (model.get("tag"), model.get("provider")):
+            raise SystemExit("This set used a different model. Start a new run or rescore the saved results.")
         meta.setdefault("resumed", []).append(datetime.now().isoformat(timespec="seconds"))
     meta.update({
         "set": set_name, "label": label, "set_file": str(SETS[set_name].relative_to(ROOT)).replace("\\", "/"),
         "set_file_sha256": sha256(SETS[set_name]), "cases_planned": len(records),
         "started_at": meta.get("started_at") or datetime.now().isoformat(timespec="seconds"),
         "scorer_version": SCORER_VERSION, "settings": run_settings(ai.settings),
-        "model": model_info(recorder, ai.settings), "git": git_info(), "environment": environment(),
+        "model": model, "git": git_info(), "environment": environment(),
         "fingerprints": {f: sha256(ROOT / f) for f in FINGERPRINT_FILES},
         "system_prompt_sha256": hashlib.sha256(ai.instructions.encode()).hexdigest(),
         "command": " ".join(sys.argv), "interrupted": False, "interrupt_reason": None,
@@ -456,6 +439,11 @@ def run_set(set_name: str, label: str, ai: BudgetAI, recorder: RecordingClient, 
                     break
     except KeyboardInterrupt:
         meta.update(interrupted=True, interrupt_reason="stopped by the user (Ctrl+C)")
+    except ModelRateLimitError as exc:
+        meta.update(interrupted=True, interrupt_reason=str(exc))
+        finish(run_dir, meta)
+        print(f'Resume this set after the quota resets with --resume "{run_dir}"', flush=True)
+        raise
     finish(run_dir, meta)
     return run_dir
 
@@ -471,16 +459,14 @@ def finish(run_dir: Path, meta: dict) -> dict:
     return summary
 
 
-def warm_up(ai: BudgetAI, recorder: RecordingClient) -> dict:
-    recorder.calls = []
+def warm_up(ai: BudgetAI) -> dict:
     start = time.perf_counter()
     try:
         ai.generate_budget(WARMUP_PROFILE)
         error = None
-    except BudgetAIError as exc:
+    except InvalidModelResponseError as exc:
         error = str(exc)
-    load = recorder.calls[0].get("load_duration_s") if recorder.calls else None
-    return {"seconds": round(time.perf_counter() - start, 2), "load_duration_s": load, "error": error}
+    return {"seconds": round(time.perf_counter() - start, 2), "error": error}
 
 
 def planner_only(set_names: list) -> int:
@@ -580,26 +566,28 @@ def main(argv=None) -> None:
         compare(*args.compare)
         return
 
-    import ollama
     settings = config.load_settings()
-    recorder = RecordingClient(ollama.Client(host=settings.ollama_host, timeout=settings.timeout_seconds))
-    ai = BudgetAI(settings=settings, client=recorder)
     ids = set(args.ids.split(",")) if args.ids else None
-    print(f"Model {settings.model_name} at {settings.ollama_host}; warming up ...", flush=True)
-    warmup = warm_up(ai, recorder)
-    print(f"Warm-up: {warmup}", flush=True)
-    if warmup["error"] and ("Cannot reach Ollama" in warmup["error"] or "not downloaded" in warmup["error"]):
-        print(f"Stopped before any case ran: {warmup['error']}", flush=True)
+    try:
+        with GroqAIService(settings) as client:
+            recorder = RecordingClient(client)
+            ai = BudgetAI(settings=settings, client=recorder)
+            print(f"Testing {settings.model_name} on Groq ...", flush=True)
+            warmup = warm_up(ai)
+            print(f"Warm-up: {warmup}", flush=True)
+            if args.resume:
+                meta = json.loads((args.resume / "run.json").read_text(encoding="utf-8"))
+                run_set(meta["set"], meta["label"], ai, recorder, args.resume.parent,
+                        args.limit, ids, args.resume, warmup)
+                return
+            stamp = datetime.now().strftime("%Y%m%d-%H%M")
+            out_dir = RESULTS_DIR / f"{args.label}-{stamp}"
+            for name in args.set:
+                run_set(name, args.label, ai, recorder, out_dir, args.limit, ids, warmup=warmup)
+            print(f"\nAll results are in {out_dir}")
+    except BudgetAIError as exc:
+        print(f"Evaluation stopped: {exc}", file=sys.stderr)
         sys.exit(2)
-    if args.resume:
-        meta = json.loads((args.resume / "run.json").read_text(encoding="utf-8"))
-        run_set(meta["set"], meta["label"], ai, recorder, args.resume.parent, args.limit, ids, args.resume, warmup)
-        return
-    stamp = datetime.now().strftime("%Y%m%d-%H%M")
-    out_dir = RESULTS_DIR / f"{args.label}-{stamp}"
-    for name in args.set:
-        run_set(name, args.label, ai, recorder, out_dir, args.limit, ids, warmup=warmup)
-    print(f"\nAll results are in {out_dir}")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 # BudgetAI Model
 
-A specialized AI budgeting system for households in the Philippines. It runs
-on the open-weight Qwen3.5 4B model through Ollama with no paid AI APIs.
+A specialized AI budgeting system for households in the Philippines. Its Python
+backend uses Groq's `openai/gpt-oss-20b` model for chat and budget explanations.
 
 **Design rule:** the AI understands situations and explains recommendations;
 plain Python code does every calculation and enforces every rule (for example,
@@ -42,14 +42,13 @@ is rejected.
 | 4. Dataset (412 scenarios with checked expected budgets) | Done |
 | 5. Budgeting engine bug fixes (money policy, inconsistent and incomplete data) | Done |
 | 6. Evaluation and improvement | Done |
-| 7. API (FastAPI) | Done locally |
-| 8. Online deployment | GitHub release and server setup |
 
 ## Folder structure
 
 ```
 BudgetAI_Model/
-├── model/                    AI layer (talks to Qwen through Ollama)
+├── model/                    AI layer
+│   ├── ai_service.py         Groq SDK transport and error handling
 │   ├── schemas.py            data formats: profile in, AI JSON out, checked result
 │   ├── budgeting_ai.py       builds the budget with Python, then asks the model to explain it
 │   ├── budget_chat.py        resolves questions, follow-ups and expense scenarios
@@ -69,12 +68,11 @@ BudgetAI_Model/
 │   ├── budgeting_examples.jsonl   300 scenarios
 │   └── test_scenarios.jsonl       112 held-out scenarios (10 hand-checked)
 ├── evaluation/               regression and external-data challenge cases
-│   ├── evaluate_model.py     runs Qwen, saves replies and reports results
+│   ├── evaluate_model.py     runs the model, saves replies and reports results
 │   └── scoring.py            checks raw replies and the final advice separately
 ├── tests/                    automated tests (run with: pytest)
-├── api.py                    local FastAPI service
 ├── config.py                 reads and checks all settings from .env
-├── check_setup.py            confirms Python, Ollama and the model work together
+├── check_setup.py            checks a structured Groq reply with a fictional household
 ├── try_budgetai.py           runs BudgetAI on four sample households
 ├── .env                      private settings for this computer (not in Git)
 ├── .env.example              template for .env (safe to share)
@@ -86,7 +84,8 @@ BudgetAI_Model/
 
 ## Setup on a new Windows computer
 
-Requires Python 3.10+, Git and Ollama.
+Requires Python 3.10+, Git, internet access, and a Groq Free Plan key for AI
+features.
 
 ```powershell
 git clone <your-repository-url> BudgetAI_Model
@@ -95,35 +94,54 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item .env.example .env
-ollama pull qwen3.5:4b-q4_K_M
 ```
+
+Sign in to Groq Console, select a Free Plan organization, and create an API key.
+Paste the value after `GROQ_API_KEY=` in your private `.env`. You can also set
+`$env:GROQ_API_KEY` in the PowerShell session that launches the Python process.
+Set `BUDGETAI_MODEL` to a Groq model ID to override the default.
+[Groq API keys](https://console.groq.com/keys) · [Groq quickstart](https://console.groq.com/docs/quickstart)
+
+For the BahayBulsa desktop app, use its bundled backend settings and run
+`python main.py` from the BahayBulsa application folder. This opens PyWebView
+and uses the Python Groq integration directly. See the app's README for setup.
 
 ## Daily use
 
 ```powershell
 cd $HOME\Documents\BudgetAI_Model
 .\.venv\Scripts\Activate.ps1
-python check_setup.py   # Ollama + model + structured answer check
+python check_setup.py   # one live Groq request with fictional budget data
 python try_budgetai.py  # BudgetAI on four sample households (uses the model)
 python dataset/validate_dataset.py   # check the dataset
-pytest                  # automated tests (no Ollama needed)
+pytest                  # automated tests with test doubles for model calls
 ```
 
 In Windows Command Prompt, run the setup check and a sample budget with the
-project's Python executable. Open Ollama before running these commands.
+project's Python executable.
 
 ```bat
 cd /d "%USERPROFILE%\Documents\BudgetAI_Model"
 .\.venv\Scripts\python.exe check_setup.py
 .\.venv\Scripts\python.exe try_budgetai.py 1
-.\.venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
 ```
 
-On an existing installation, back up `.env` before editing it. Set
-`BUDGETAI_MODEL=qwen3.5:4b-q4_K_M` and `BUDGETAI_CONTEXT_TOKENS=4096`, then restart
-the API. To compare with the old model for one CMD session, use
-`set "BUDGETAI_MODEL=qwen3.5:2b-q4_K_M"` before running the same commands.
-Run `ollama ps` after a reply to inspect GPU usage and the context length.
+## Groq Free Plan limits
+
+| Limit for `openai/gpt-oss-20b` | Published value |
+|---|---:|
+| Requests per minute | 30 |
+| Requests per day | 1,000 |
+| Tokens per minute | 8,000 |
+| Tokens per day | 200,000 |
+| Model context window | 131,072 tokens |
+| Model completion limit | 65,536 tokens |
+
+The quotas are per organization. Check your Groq Console for your organization's
+limits. BudgetAI uses smaller prompts and completion budgets. If Groq returns a
+rate limit, follow the retry timing from Groq when available. The Free Plan
+quotas can interrupt a large evaluation run.
+[Groq rate limits](https://console.groq.com/docs/rate-limits) · [Organization limits](https://console.groq.com/settings/limits) · [GPT-OSS 20B](https://console.groq.com/docs/model/openai/gpt-oss-20b)
 
 ## Phase 6 evaluation
 
@@ -138,148 +156,52 @@ averages and national savings and debt patterns for context.
 ```powershell
 python -m evaluation.cases --check
 python -m evaluation.evaluate_model --planner-only --set regression heldout challenge
-python -m evaluation.evaluate_model --set regression heldout challenge --label phase6
+python -m evaluation.evaluate_model --set regression --limit 2 --label groq-20b
 ```
 
 The evaluator saves case-level replies, model settings, Git and input fingerprints,
 scores, and a report for each set under `results/evaluation/`. The report separates
-Python planner correctness, Qwen's raw reply scores, and the final advice scores.
+Python planner correctness, raw model reply scores, and final advice scores.
+For a longer run interrupted by a rate limit, wait for it to reset and use
+`--resume` with the set folder printed by the evaluator.
 
-The Phase 6 comparison used `qwen3.5:2b-q4_K_M` with scorer 1.1. The first 91
-held-out replies were recovered from the saved baseline. The same scorer was
-applied to every baseline and final reply. All 137 budgets matched before and
-after the changes.
+## Call BudgetAI from Python
 
-| Cases | Raw replies passing every check | Final advice passing every check |
-|---|---|---|
-| Named regressions | 0/5 → 0/5 | 2/5 → 5/5 |
-| Original held-out | 8/112 → 9/112 | 72/112 → 93/112 |
-| External-data challenge | 6/20 → 2/20 | 13/20 → 19/20 |
+`BudgetAI.generate_budget(profile)` builds a proposed monthly budget and returns
+Python-calculated totals, allocations, and checked Groq advice. Use
+`BudgetAI.respond_to_chat(ChatRequest(...))` for household budgeting questions or
+what-if comparisons. Include up to eight recent messages in `history` for
+follow-ups. BahayBulsa saves the desktop chat history in its local data folder.
 
-The held-out rerun had 34 newly passing and 13 newly failing explanations.
-The challenge case X-14 failed because its explanation gave an unsupported
-amount for a proposed spending cut. Context still matters when checking
-figures. For example, the scorer passed R-IRREGULAR-STATED even though the
-summary said PHP 14,000 covered a month of PHP 16,000 in required spending.
-
-## Phase 7 local API
-
-With Ollama running and the configured model installed, start the service from
-the project folder. Use `python -m pip install -r requirements.txt` in the activated
-virtual environment if the API dependencies are missing.
-
-```powershell
-python -m uvicorn api:app --host 127.0.0.1 --port 8000
-```
-
-The loopback address keeps the service on this computer. Explore the request
-and response schemas and try a budget in the [interactive API docs](http://127.0.0.1:8000/docs).
-
-| Endpoint | Result |
-|---|---|
-| `GET /health` | `200` with `{"status":"ok"}` when the API is running. |
-| `POST /budget` | `200` with the budget, verified facts, action steps, and advice. Valid incomplete profiles also return `200` with `missing_data`. |
-| `POST /chat` | Ask about a budget, analyze recorded expenses, or compare a hypothetical expense change. |
-| `GET /openapi.json` | The machine-readable API contract. |
-
-Send a sample request from a second PowerShell terminal.
-
-```powershell
-$profile = @{
-    incomes = @(@{name = 'Salary'; monthly_amount = 30000})
-    expenses = @(
-        @{name = 'Rent'; category = 'housing'; monthly_amount = 10000}
-        @{name = 'Groceries'; category = 'food'; monthly_amount = 8000}
-    )
-    household_size = 2
-}
-Invoke-RestMethod -Uri http://127.0.0.1:8000/budget -Method Post `
-    -ContentType application/json -Body ($profile | ConvertTo-Json -Depth 5)
-```
-
-Malformed JSON and invalid profiles return `422` with field locations and
-validation messages. An unavailable Ollama server or model returns `503`.
-An unusable model reply or another upstream model failure returns `502`.
-A model timeout returns `504` with code `model_timeout`. Budget and chat responses
-use `Cache-Control: no-store`.
-
-### Budget chat
-
-In the interactive docs, open **POST /chat**, click **Try it out**, and pick a
-budget, rent increase, or recorded spending example. A chat request takes the same household
-profile as `/budget`, plus a `message`. The response includes a `reply` and the
-current `plan`.
-
-For a comparison, ask “What if my rent goes up by 2,000?” using an expense name
-from the profile. You can also send a `change` with `expense_name`, `operation`
-(`set`, `increase`, or `decrease`), and `amount`. The separate `scenario.plan`
-contains the recalculated budget. Pass the same profile again to keep comparing
-with the original. To ask questions about a proposed plan, send the updated
-profile with your next question.
-
-For follow-up questions, send up to eight recent messages in `history`. Each
-entry has a `role` of `user` or `assistant` and a `content` string. BudgetAI keeps
-this history in the request and leaves conversation storage to the calling app.
-
-#### Recorded expenses
-
-Send an optional `records` object when replying about actual spending.
-
-```json
-{
-  "as_of": "2026-11-19",
-  "coverage_start": "2026-10-01",
-  "transactions": [
-    {"posted_on": "2026-10-10", "name": "Electricity", "category": "utilities", "amount": 2200},
-    {"posted_on": "2026-11-10", "name": "Electricity", "category": "utilities", "amount": 2800},
-    {"posted_on": "2026-11-15", "name": "Groceries", "category": "food", "amount": 5800}
-  ],
-  "category_limits": {"food": 5000}
-}
-```
-
-The app supplies complete posted expense coverage between `coverage_start` and
-`as_of`, inclusive, for the signed-in household. Send only the dates needed for
-the question. `category_limits` optionally provides the current month's limits.
-Use the same currency across the profile and its records. An empty covered
-period has zero recorded expenses. For incomplete periods, chat asks for the
-missing records. A month-to-month comparison uses matching days where possible,
-and a question about last month's total alone uses the full calendar month.
-
-The API processes each request independently. A production calling app retrieves
-records using its own authenticated user scope. The BahayBulsa preview keeps a
-separate in-memory dashboard for each browser session. The chat model receives
-the question, short recent conversation context, and relevant labels. Python
-calculates the amounts and writes the spending reply. Bill comparisons can show
-the change in recorded cost, and the bill itself is needed to verify the cause.
-
-To run automated tests and the five existing advice regression cases in CMD:
-
-```bat
-.\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m evaluation.evaluate_model --set regression --label qwen35-4b
-```
-
-## Phase 8 deployment
-
-GitHub Actions tests the project and publishes the BudgetAI container to GitHub's
-Container Registry. A Linux server runs that image with Ollama and provides
-authenticated access over HTTPS. Follow the [Phase 8 deployment guide](deploy/README.md)
-to publish an image, start the services, and verify them from another device.
+For questions about recorded spending, pass a `SpendingRecords` snapshot of the
+relevant dates, categories, and amounts. Month-to-month comparisons use matching
+days where possible. A question about last month's total alone uses the full
+calendar month.
 
 ## Settings (.env)
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `OLLAMA_HOST` | `http://localhost:11434` | Where Ollama runs. localhost = this computer only. |
-| `BUDGETAI_MODEL` | `qwen3.5:4b-q4_K_M` | Ollama model tag (must appear in `ollama list`). |
+| `GROQ_API_KEY` | Required for AI | Backend credential for Groq HTTPS requests. |
+| `BUDGETAI_PROVIDER` | `groq` | AI provider. |
+| `BUDGETAI_MODEL` | `openai/gpt-oss-20b` | Groq chat model ID. |
 | `BUDGETAI_CURRENCY` | `PHP` | Currency for all amounts. |
 | `BUDGETAI_TEMPERATURE` | `0` | Answer randomness; 0 = most predictable. |
-| `BUDGETAI_TIMEOUT_SECONDS` | `120` | Seconds to wait for the AI. |
-| `BUDGETAI_CONTEXT_TOKENS` | `4096` | Context window in tokens. Larger windows use more memory. |
+| `BUDGETAI_TIMEOUT_SECONDS` | `30` | Request timeout in seconds. |
 
 ## Security notes
 
-- `.env` is never committed to Git. Put secrets only there.
-- Ollama listens on localhost only. Never expose port 11434 to the internet;
-  in Phase 8 the public will reach BudgetAI only through the secured API.
+- Keep the key in the Python process environment or the Git-ignored `.env`.
+- BahayBulsa manages its records and history in its own storage. An AI request
+  can send relevant calculated financial figures, labels, the question, and short
+  recent conversation context to Groq over HTTPS. Avoid entering identifying
+  details or account credentials in chat.
+- Groq retains usage metadata. It ordinarily does not retain inference content,
+  but reliability or abuse monitoring can log requests and responses for up to
+  30 days, subject to legal obligations. Zero Data Retention is available in
+  Groq Console. [Groq data retention](https://console.groq.com/docs/your-data) ·
+  [Data Controls](https://console.groq.com/settings/data-controls)
+- Budget plan explanations use structured replies and Python validates them.
+  Python calculates the budget and checked amounts before the model generates
+  advice. [Groq structured outputs](https://console.groq.com/docs/structured-outputs) ·
+  [Groq Python SDK](https://github.com/groq/groq-python)

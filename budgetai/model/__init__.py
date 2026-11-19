@@ -1,1 +1,1 @@
-"""AI layer of BudgetAI: everything that talks to the Qwen model through Ollama."""
+"""BudgetAI prompts, validated responses, and Groq integration."""

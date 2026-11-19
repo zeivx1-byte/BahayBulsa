@@ -1,3 +1,4 @@
 # Local desktop ledger and Python bytecode.
 /data/
+/.venv/
 __pycache__/

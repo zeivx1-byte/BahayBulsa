@@ -2,9 +2,7 @@
 # Install them inside the activated virtual environment with:
 #     pip install -r requirements.txt
 
-ollama==0.6.3          # talk to the AI model running in Ollama
+groq==1.7.0            # official Groq inference API client
 pydantic==2.14.3       # define and validate the JSON shape of AI answers
 python-dotenv==1.2.4   # read settings from the .env file
-fastapi==0.162.5      # local HTTP API and interactive documentation
-uvicorn==0.54.0       # ASGI server for the API
 pytest==9.2.0          # run automated tests

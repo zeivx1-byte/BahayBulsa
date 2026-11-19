@@ -1,5 +1,4 @@
-# Store text files with Linux-style line endings (LF) so the project works
-# the same on your Windows laptop and on a Linux server later.
+# Use LF for shared source files across Windows and Linux.
 * text=auto eol=lf
 
 # Windows-only scripts keep Windows line endings.
