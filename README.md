@@ -45,6 +45,8 @@ API changes, measured performance, and remaining limits.
 4. Open **Chat with BudgetAI** and choose **Sample household** to try the rent example. To test with dated entries, create a BahayBulsa account in that Codespace and choose **My dashboard**.
 
 If port 8080 is missing or the page stops responding after a restart, run
-`bash .devcontainer/start-preview.sh` in the Codespace terminal. The model runs
-inside the Codespace, so its speed depends on the Codespace's CPU and memory.
+`bash .devcontainer/start-preview.sh` in the Codespace terminal. The script creates
+the Python virtual environment when needed and installs dependencies before
+starting the website. The model runs inside the Codespace, so its speed depends
+on the Codespace's CPU and memory.
 Each Codespace has its own website database. Stop the Codespace when finished.

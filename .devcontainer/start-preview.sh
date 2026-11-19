@@ -8,6 +8,7 @@ readonly ollama_container=bahaybulsa-preview-ollama
 readonly ollama_url=http://127.0.0.1:11434
 readonly model="${BUDGETAI_MODEL:-qwen3.5:4b-q4_K_M}"
 readonly preview_health=http://127.0.0.1:8080/api/health
+readonly preview_python=budgetai/.venv/bin/python
 readonly log_dir="${TMPDIR:-/tmp}/bahaybulsa-preview-${UID}"
 umask 077
 mkdir -p "$log_dir"
@@ -52,8 +53,15 @@ if ! docker exec --env "OLLAMA_HOST=$ollama_url" "$ollama_container" ollama show
 fi
 
 if ! curl --fail --silent --max-time 2 "$preview_health" >/dev/null; then
+    if [[ ! -x "$preview_python" ]]; then
+        echo "Creating the BudgetAI Python environment."
+        python3 -m venv budgetai/.venv
+    fi
+    echo "Checking the BudgetAI Python dependencies."
+    "$preview_python" -m pip install --disable-pip-version-check -r budgetai/requirements.txt
+
     PYTHONDONTWRITEBYTECODE=1 OLLAMA_HOST="$ollama_url" BUDGETAI_MODEL="$model" BUDGETAI_TIMEOUT_SECONDS=300 \
-        nohup budgetai/.venv/bin/python -m uvicorn --app-dir budgetai browser_preview:app \
+        nohup "$preview_python" -m uvicorn --app-dir budgetai browser_preview:app \
         --host 127.0.0.1 --port 8080 --no-access-log \
         9>&- </dev/null >"$log_dir/preview.log" 2>&1 &
     preview_pid=$!

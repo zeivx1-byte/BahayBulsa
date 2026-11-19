@@ -13,7 +13,6 @@
       "onAutoForward": "ignore"
     }
   },
-  "postCreateCommand": "python -m venv budgetai/.venv && budgetai/.venv/bin/python -m pip install -r budgetai/requirements.txt",
   "postStartCommand": ["bash", ".devcontainer/start-preview.sh"],
   "waitFor": "postStartCommand"
 }
