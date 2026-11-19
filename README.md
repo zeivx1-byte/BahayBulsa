@@ -1,5 +1,5 @@
 # BahayBulsa
-Managing household finances efficiently is a persistent challenge for families balancing budgets and savings goals. The **Household Expense Budget Organizer** centralizes income tracking, categorizes daily expenses, and provides real-time budget analytics. This proposal outlines the platform's core objectives, features, tech stack, and timeline.
+BahayBulsa is a household budgeting app for tracking income, expenses, and bills. The website supports monthly budgets, local accounts, and BudgetAI chat powered by Qwen3.5 4B through Ollama.
 
 ## BudgetAI backend
 
@@ -39,7 +39,7 @@ API changes, measured performance, and remaining limits.
 
 ## Try BahayBulsa in GitHub Codespaces
 
-1. [Create a Codespace on the BahayBulsa preview branch](https://codespaces.new/zeivx1-byte/BahayBulsa/tree/codex/bahaybulsa-browser-preview).
+1. [Create a Codespace from BahayBulsa's default branch](https://codespaces.new/zeivx1-byte/BahayBulsa).
 2. Wait for setup to install the Python dependencies, download Qwen3.5 4B into Ollama, and start BahayBulsa. The first start takes longer because it downloads the model.
 3. In the Codespace, open **Ports** and use **Open in Browser** on **8080 · BahayBulsa preview**. Keep the port **Private**.
 4. Open **Chat with BudgetAI** and choose **Sample household** to try the rent example. To test with dated entries, create a BahayBulsa account in that Codespace and choose **My dashboard**.
@@ -50,3 +50,10 @@ the Python virtual environment when needed and installs dependencies before
 starting the website. The model runs inside the Codespace, so its speed depends
 on the Codespace's CPU and memory.
 Each Codespace has its own website database. Stop the Codespace when finished.
+
+## Project layout
+
+- `web/` contains the dashboard and chat interface.
+- `budgetai/browser_preview.py` serves the website and its account, dashboard, and chat routes. `website_store.py` handles the website's SQLite storage.
+- `budgetai/model/` contains the Ollama integration and chat logic. `budgetai/budgeting_engine/` contains the financial calculations.
+- `main.py` starts the existing desktop app using the files in `web/`.

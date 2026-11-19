@@ -1,0 +1,3 @@
+# Local desktop ledger and Python bytecode.
+/data/
+__pycache__/
