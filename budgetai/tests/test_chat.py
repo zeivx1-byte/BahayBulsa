@@ -98,6 +98,26 @@ def test_chat_resolves_a_follow_up_to_a_named_amount(chat_client):
 
 
 @pytest.mark.parametrize("message", [
+    "suggest me budgeting ideas",
+    "Can you give me ideas for my budget?",
+    "What should I focus on first?",
+])
+def test_chat_answers_budgeting_ideas_with_grounded_next_steps(chat_client, message):
+    client, transport = chat_client
+    transport.reply = json.dumps({"topic": "summary"})
+
+    response = client.post("/chat", json={"profile": PROFILE, "message": message})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scenario"] is None
+    assert "PHP 12,000.00" in body["reply"] and "emergency fund" in body["reply"]
+    assert "Groceries" in body["reply"] and "PHP 8,000.00" in body["reply"]
+    assert "Compare prices before buying." in body["reply"]
+    assert not transport.calls
+
+
+@pytest.mark.parametrize("message", [
     "What if my rent goes up by ₱2,000?",
     "What if my rent rises to PHP 12,000 per month?",
 ])
