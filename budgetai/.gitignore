@@ -1,0 +1,27 @@
+# Files and folders Git should never save or upload.
+
+# Private settings and secrets
+.env
+
+# Virtual environment (rebuilt from requirements.txt on each machine)
+.venv/
+
+# Python's automatic cache files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Editor and Windows files
+.vscode/
+Thumbs.db
+desktop.ini
+
+# Output saved by test runs (python try_budgetai.py --save)
+results/
+
+# AI model files (Ollama downloads these; they are far too big for Git)
+*.gguf
+
+# Review documents downloaded from Claude (kept on this computer, not in Git)
+Claude outputs/
+*.pdf
