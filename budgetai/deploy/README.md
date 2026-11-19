@@ -6,8 +6,7 @@ the API and interactive docs. The model and API ports stay inside Docker.
 
 ## Publish the image
 
-1. Merge the BudgetAI deployment branch into BahayBulsa's default branch so the
-   manual publishing workflow is available in GitHub Actions.
+1. Add the project and its workflows to the team's GitHub repository.
 2. Let **BudgetAI checks** pass on the code you want to deploy.
 3. In **Actions**, select **Publish BudgetAI image** and click **Run workflow**.
    Use the image reference beginning with `ghcr.io/` and ending in `@sha256:…`
@@ -25,7 +24,7 @@ model, and persistent disk for the downloaded weights. Point the API hostname
 at the server and allow inbound TCP ports 80 and 443 for Caddy. The server needs
 outbound access to download images and the Ollama model.
 
-Clone the BahayBulsa repository on the server, go to `budgetai/deploy`, and
+Clone the GitHub repository on the server, go to this `deploy` directory, and
 create the local settings file on the first deployment.
 
 ```bash
@@ -38,7 +37,10 @@ Edit `deploy/.env` with the bare hostname in `BUDGETAI_DOMAIN`, the published
 digest reference in `BUDGETAI_IMAGE`, and a login in `BUDGETAI_USERNAME`. Put the
 bcrypt hash from Caddy in `BUDGETAI_PASSWORD_HASH` and keep its single quotes so
 Compose preserves the dollar signs. Keep the actual password in the team's
-password manager. The default model is `qwen3.5:2b-q4_K_M`.
+password manager. The default model is `qwen3.5:4b-q4_K_M` with a 4,096-token
+context. Set `BUDGETAI_MODEL` and `BUDGETAI_CONTEXT_TOKENS` in `deploy/.env` to
+override these settings. On an existing deployment, update any saved model
+setting to select the new default.
 
 ```bash
 docker compose config --quiet

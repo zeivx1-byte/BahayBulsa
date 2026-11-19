@@ -7,12 +7,18 @@ one short question, so it is safe to run at any time.
 Run from the BudgetAI_Model folder with the virtual environment active:
     python check_setup.py
 """
+from __future__ import annotations
+
 import json
 import sys
 import time
+from contextlib import closing
+from typing import TYPE_CHECKING, NoReturn
 
-MODEL = "qwen3.5:2b-q4_K_M"
-OLLAMA_HOST = "http://localhost:11434"
+if TYPE_CHECKING:
+    from config import Settings
+    from ollama import Client
+
 REQUIRED_LIBRARIES = {
     "ollama": "ollama",
     "pydantic": "pydantic",
@@ -29,7 +35,7 @@ def ok(message: str) -> None:
     print(f"[OK]   {message}")
 
 
-def fail(message: str, fix: str) -> None:
+def fail(message: str, fix: str) -> NoReturn:
     print(f"[FAIL] {message}")
     print(f"       Fix: {fix}")
     sys.exit(1)
@@ -44,7 +50,7 @@ def check_python() -> None:
     if sys.prefix == sys.base_prefix:
         fail(
             "The .venv virtual environment is not active",
-            r"Run  .\.venv\Scripts\Activate.ps1  in the BudgetAI_Model folder first.",
+            r"Run .\.venv\Scripts\python.exe check_setup.py in the BudgetAI_Model folder.",
         )
     ok(f"Virtual environment active: {sys.prefix}")
 
@@ -64,48 +70,52 @@ def check_libraries() -> None:
     ok(f"Libraries installed: {', '.join(REQUIRED_LIBRARIES.values())}")
 
 
-def check_ollama(client) -> None:
+def check_ollama(client: Client, settings: Settings) -> None:
+    from httpx import RequestError, TimeoutException
+    from ollama import ResponseError
+
     try:
         listed = client.list()
-    except Exception as exc:  # connection refused, timeout, etc.
+        ok(f"Ollama is running ({len(listed.models)} model(s) downloaded)")
+        client.show(settings.model_name)
+    except TimeoutException:
+        fail("Ollama timed out while checking the configured model", "Check Ollama and try again.")
+    except (ConnectionError, RequestError):
         fail(
-            f"Cannot reach Ollama at {OLLAMA_HOST} ({exc})",
-            "Open Ollama from the Start menu, wait a few seconds, then run this again.",
+            "Cannot reach the configured Ollama server",
+            "Check OLLAMA_HOST and make sure Ollama is running.",
         )
-
-    names = [getattr(m, "model", None) or getattr(m, "name", "") for m in listed.models]
-    ok(f"Ollama is running ({len(names)} model(s) downloaded)")
-
-    if MODEL not in names:
-        fail(f"Model {MODEL} is not downloaded", f"Run  ollama pull {MODEL}")
-    ok(f"Model {MODEL} is downloaded")
+    except ResponseError as exc:
+        if exc.status_code == 404:
+            fail(f"Model {settings.model_name} is unavailable", f"Run ollama pull {settings.model_name}")
+        fail(f"Ollama returned HTTP {exc.status_code}", "Check the Ollama server logs and try again.")
+    ok(f"Model {settings.model_name} is available")
 
 
-def check_structured_answer(client) -> None:
-    from pydantic import BaseModel, ValidationError
+def check_structured_answer(client: Client, settings: Settings) -> None:
+    from httpx import RequestError, TimeoutException
+    from ollama import ResponseError
+    from pydantic import BaseModel, Field, ValidationError
 
-    class LeftoverCheck(BaseModel):
-        monthly_income: float
-        monthly_expenses: float
-        amount_left: float
-        advice: str
+    class SetupAnswer(BaseModel):
+        advice: str = Field(min_length=1)
 
     income, expenses = 25_000, 18_500
+    amount_left = income - expenses
+    currency = settings.currency
     messages = [
         {
             "role": "system",
             "content": (
                 "You are BudgetAI, a budgeting assistant for households in the "
-                "Philippines. All amounts are in Philippine pesos (PHP). "
-                "Reply only with JSON that matches the given schema."
+                "Philippines. Reply only with JSON that matches the given schema."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"My monthly income is PHP {income:,} and my monthly expenses are "
-                f"PHP {expenses:,}. Fill in the JSON with my income, my expenses, "
-                "the amount left, and one sentence of advice."
+                f"My household has {currency} {amount_left:,} left after monthly expenses. "
+                "Give one sentence suggesting a sensible use for some of it."
             ),
         },
     ]
@@ -113,36 +123,37 @@ def check_structured_answer(client) -> None:
     start = time.perf_counter()
     try:
         response = client.chat(
-            model=MODEL,
+            model=settings.model_name,
             messages=messages,
-            format=LeftoverCheck.model_json_schema(),  # forces this JSON shape
-            options={"temperature": 0},                 # same input -> same answer
-            think=False,                                # skip slow "thinking"
+            format=SetupAnswer.model_json_schema(),
+            options={"temperature": settings.temperature, "num_ctx": settings.context_tokens, "num_predict": 96},
+            think=False,
         )
-    except Exception as exc:
-        fail(f"The model did not answer ({exc})", "Run  ollama ps  and tell Claude what it shows.")
-    seconds = time.perf_counter() - start
-
-    try:
-        answer = LeftoverCheck.model_validate_json(response.message.content)
-    except ValidationError as exc:
+        answer = SetupAnswer.model_validate_json(response.message.content or "")
+    except TimeoutException:
         fail(
-            f"The reply was not valid JSON for the schema:\n{exc}",
-            "Run the check again. If it keeps failing, send Claude this output.",
+            f"The model timed out after {settings.timeout_seconds:g} seconds",
+            "Check the Ollama logs and adjust BUDGETAI_TIMEOUT_SECONDS if needed.",
         )
+    except (ConnectionError, RequestError):
+        fail("Lost the connection to Ollama", "Check OLLAMA_HOST and make sure Ollama is running.")
+    except ResponseError as exc:
+        if exc.status_code == 404:
+            fail(f"Model {settings.model_name} is unavailable", f"Run ollama pull {settings.model_name}")
+        fail(
+            f"Ollama could not run {settings.model_name} (HTTP {exc.status_code})",
+            "Check the Ollama server logs and memory usage.",
+        )
+    except ValidationError:
+        fail("The model reply did not match the required JSON format", "Check the model and run setup again.")
+    seconds = time.perf_counter() - start
     ok(f"Model returned valid structured JSON in {seconds:.1f} s")
-    print(json.dumps(answer.model_dump(), indent=2, ensure_ascii=False))
-
-    correct = income - expenses
-    if abs(answer.amount_left - correct) < 0.01:
-        ok(f"Model's math matches Python: PHP {correct:,.2f} left")
-    else:
-        print(
-            f"[NOTE] The model said PHP {answer.amount_left:,.2f} left, but the correct "
-            f"amount is PHP {correct:,.2f}.\n"
-            "       Expected with small models. This is why Python, not the AI, "
-            "will do all budget math (Phase 5)."
-        )
+    print(json.dumps({
+        "monthly_income": income,
+        "monthly_expenses": expenses,
+        "amount_left": amount_left,
+        "advice": answer.advice,
+    }, indent=2, ensure_ascii=False))
 
 
 def main() -> None:
@@ -152,9 +163,14 @@ def main() -> None:
 
     from ollama import Client
 
-    client = Client(host=OLLAMA_HOST)
-    check_ollama(client)
-    check_structured_answer(client)
+    try:
+        from config import settings
+    except ValueError as exc:
+        fail(str(exc), "Review the BudgetAI environment settings and run setup again.")
+
+    with closing(Client(host=settings.ollama_host, timeout=settings.timeout_seconds)) as client:
+        check_ollama(client, settings)
+        check_structured_answer(client, settings)
     print("\nPhase 1 setup check passed. Your environment is ready.")
 
 

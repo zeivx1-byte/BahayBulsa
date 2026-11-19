@@ -6,7 +6,7 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 readonly ollama_image=ollama/ollama:0.40.16
 readonly ollama_container=bahaybulsa-preview-ollama
 readonly ollama_url=http://127.0.0.1:11434
-readonly model=qwen3.5:2b-q4_K_M
+readonly model="${BUDGETAI_MODEL:-qwen3.5:4b-q4_K_M}"
 readonly preview_health=http://127.0.0.1:8080/api/health
 readonly log_dir="${TMPDIR:-/tmp}/bahaybulsa-preview-${UID}"
 umask 077

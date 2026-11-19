@@ -14,6 +14,7 @@ centavo as soon as it is read, with half a centavo rounding up
 works in whole centavos, so displayed budget lines always add up to the
 displayed total. An income or goal target that rounds to 0.00 is rejected.
 """
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Literal, Optional
 
@@ -238,11 +239,52 @@ class ExpenseChange(_Strict):
         return self
 
 
+class ExpenseTransaction(_Strict):
+    """A posted expense in the configured currency."""
+
+    posted_on: date
+    name: str = Field(min_length=1, max_length=80)
+    category: ExpenseCategory
+    amount: PositiveMoney
+
+
+class UpcomingBill(_Strict):
+    name: str = Field(min_length=1, max_length=80)
+    due_on: date
+    amount: PositiveMoney
+    recurring: bool = False
+
+
+class SpendingRecords(_Strict):
+    """Complete posted expense coverage for one household over an inclusive date range."""
+
+    as_of: date
+    coverage_start: date
+    transactions: list[ExpenseTransaction] = Field(max_length=5000)
+    category_limits: dict[ExpenseCategory, Money] = Field(default_factory=dict)
+    monthly_budget: Money | None = None
+    previous_category_limits: dict[ExpenseCategory, Money] = Field(default_factory=dict)
+    previous_monthly_budget: Money | None = None
+    income_total: Money | None = None
+    previous_income_total: Money | None = None
+    upcoming_bills: list[UpcomingBill] | None = Field(default=None, max_length=500)
+    savings_goal: SavingsGoal | None = None
+
+    @model_validator(mode="after")
+    def _validate_dates(self):
+        if self.coverage_start > self.as_of:
+            raise ValueError("coverage_start must be on or before as_of")
+        if any(not self.coverage_start <= item.posted_on <= self.as_of for item in self.transactions):
+            raise ValueError("transaction dates must be inside the declared coverage range")
+        return self
+
+
 class ChatRequest(_Strict):
     profile: FinancialProfile
     message: str = Field(min_length=1, max_length=1000)
     history: list[ChatTurn] = Field(default_factory=list, max_length=8)
     change: ExpenseChange | None = None
+    records: SpendingRecords | None = None
 
 
 class ChatScenario(BaseModel):
@@ -258,8 +300,46 @@ class ChatResponse(BaseModel):
     scenario: ChatScenario | None = None
 
 
-class ChatFocus(_Strict):
-    """The model selects a planner detail. Python writes the reply."""
+class ChatMemory(_Strict):
+    """Server-owned reference to the last verified topic, with no financial values."""
 
-    topic: Literal["summary", "line", "remaining", "next_steps", "missing_information", "clarify", "off_topic"]
+    topic: Literal[
+        "spending", "largest_category", "transaction", "expense_trend", "spending_comparison", "income",
+        "monthly_budget", "category_limit",
+    ]
+    category: ExpenseCategory | None = None
+    expense_name: str | None = Field(default=None, min_length=1, max_length=80)
+    period: Literal["current", "previous"] = "current"
+
+    @model_validator(mode="after")
+    def _single_target(self):
+        if self.category is not None and self.expense_name is not None:
+            raise ValueError("memory may reference one category or expense")
+        return self
+
+
+class LedgerChatRequest(ChatRequest):
+    """Internal chat input built from an account's ledger and conversation."""
+
+    profile: FinancialProfile | None = None
+    memory: ChatMemory | None = None
+
+
+class LedgerChatResponse(ChatResponse):
+    plan: BudgetPlan | None = None
+    memory: ChatMemory | None = None
+
+
+class ChatFocus(_Strict):
+    """The model selects a validated topic and optional reference. Python writes the reply."""
+
+    topic: Literal[
+        "summary", "line", "remaining", "next_steps", "missing_information", "clarify", "off_topic",
+        "spending", "largest_category", "category_limit", "spending_comparison", "expense_trend",
+        "reduce_expenses", "savings_goal", "unusual_spending", "transaction", "monthly_budget",
+        "income", "upcoming_bills", "recurring_bills",
+    ]
     line_index: int | None = Field(default=None, ge=0)
+    target_index: int | None = Field(default=None, ge=0)
+    period: Literal["current", "previous"] = "current"
+    detail: Literal["concise", "breakdown"] = "concise"

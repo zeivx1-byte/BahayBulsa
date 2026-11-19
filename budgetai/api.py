@@ -12,7 +12,9 @@ from pydantic import BaseModel
 
 import config
 from model.budget_chat import ScenarioError
-from model.budgeting_ai import BudgetAI, BudgetAIError, InvalidModelResponseError, ModelUnavailableError
+from model.budgeting_ai import (
+    BudgetAI, BudgetAIError, InvalidModelResponseError, ModelTimeoutError, ModelUnavailableError,
+)
 from model.schemas import BudgetResult, ChatRequest, ChatResponse, FinancialProfile
 
 
@@ -21,7 +23,7 @@ PRIVATE_RESPONSE_HEADERS = {"Cache-Control": "no-store"}
 
 
 class ModelErrorDetail(BaseModel):
-    code: Literal["model_unavailable", "invalid_model_response", "model_error"]
+    code: Literal["model_unavailable", "invalid_model_response", "model_error", "model_timeout"]
     message: str
 
 
@@ -32,6 +34,7 @@ class ModelErrorResponse(BaseModel):
 MODEL_ERROR_RESPONSES = {
     502: {"model": ModelErrorResponse, "description": "Ollama could not supply a usable explanation."},
     503: {"model": ModelErrorResponse, "description": "Ollama or the configured model is unavailable."},
+    504: {"model": ModelErrorResponse, "description": "Ollama exceeded the model request timeout."},
 }
 CHAT_EXAMPLE_PROFILE = {
     "incomes": [{"name": "Salary", "monthly_amount": 30000}],
@@ -49,6 +52,22 @@ CHAT_EXAMPLES = {
     "scenario": {
         "summary": "Try a rent increase",
         "value": {"profile": CHAT_EXAMPLE_PROFILE, "message": "What if my rent goes up by ₱2,000?"},
+    },
+    "recorded_spending": {
+        "summary": "Compare recorded food spending with a limit",
+        "value": {
+            "profile": CHAT_EXAMPLE_PROFILE,
+            "message": "Am I exceeding my food budget?",
+            "records": {
+                "as_of": "2026-11-19",
+                "coverage_start": "2026-10-01",
+                "transactions": [
+                    {"posted_on": "2026-11-09", "name": "Groceries", "category": "food", "amount": 3600},
+                    {"posted_on": "2026-11-15", "name": "Market", "category": "food", "amount": 2200},
+                ],
+                "category_limits": {"food": 5000},
+            },
+        },
     },
 }
 
@@ -73,6 +92,9 @@ def _model_error(exc: BudgetAIError) -> HTTPException:
     elif isinstance(exc, InvalidModelResponseError):
         status_code = status.HTTP_502_BAD_GATEWAY
         code, message = "invalid_model_response", "The local budget model returned an invalid reply."
+    elif isinstance(exc, ModelTimeoutError):
+        status_code = status.HTTP_504_GATEWAY_TIMEOUT
+        code, message = "model_timeout", "The local budget model did not answer in time."
     else:
         status_code = status.HTTP_502_BAD_GATEWAY
         code, message = "model_error", "The local budget model could not complete the request."

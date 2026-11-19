@@ -3,6 +3,8 @@
 import json
 from types import SimpleNamespace
 
+import httpx
+import ollama
 import pytest
 from fastapi.testclient import TestClient
 
@@ -183,6 +185,22 @@ def test_default_dependency_closes_ollama_client(monkeypatch, model_error, statu
         assert transports[0].closed
 
 
+@pytest.mark.parametrize(("upstream_error", "status", "code"), [
+    (httpx.ReadTimeout("private upstream timeout"), 504, "model_timeout"),
+    (ollama.ResponseError("unable to load model: private upstream details", 500), 503, "model_unavailable"),
+    (ollama.ResponseError("private unavailable model", 404), 503, "model_unavailable"),
+])
+def test_local_model_transport_error_is_safe_and_actionable(model_client, upstream_error, status, code):
+    client, transport = model_client
+    transport.error = upstream_error
+    response = client.post("/budget", json=PROFILE)
+    assert response.status_code == status
+    assert response.json()["detail"]["code"] == code
+    assert response.headers["Cache-Control"] == "no-store"
+    assert "private" not in response.text
+    assert transport.calls == 1
+
+
 def test_openapi_exposes_profile_input_and_budget_output(model_client):
     client, transport = model_client
     response = client.get("/openapi.json")
@@ -193,7 +211,7 @@ def test_openapi_exposes_profile_input_and_budget_output(model_client):
     response_schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
     assert request_schema["$ref"] == "#/components/schemas/FinancialProfile"
     assert response_schema["$ref"] == "#/components/schemas/BudgetResult"
-    for status in ("502", "503"):
+    for status in ("502", "503", "504"):
         error_schema = operation["responses"][status]["content"]["application/json"]["schema"]
         assert error_schema["$ref"] == "#/components/schemas/ModelErrorResponse"
     assert transport.calls == 0

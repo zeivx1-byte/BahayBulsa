@@ -1,7 +1,7 @@
 # BudgetAI Model
 
 A specialized AI budgeting system for households in the Philippines. It runs
-on a free, open-weight AI model (Qwen3.5 via Ollama) with no paid AI APIs.
+on the open-weight Qwen3.5 4B model through Ollama with no paid AI APIs.
 
 **Design rule:** the AI understands situations and explains recommendations;
 plain Python code does every calculation and enforces every rule (for example,
@@ -52,12 +52,15 @@ BudgetAI_Model/
 ├── model/                    AI layer (talks to Qwen through Ollama)
 │   ├── schemas.py            data formats: profile in, AI JSON out, checked result
 │   ├── budgeting_ai.py       builds the budget with Python, then asks the model to explain it
+│   ├── budget_chat.py        resolves questions, follow-ups and expense scenarios
+│   ├── spending_chat.py      writes replies from verified spending facts
 │   └── instructions.txt      BudgetAI's standing instructions (system prompt)
 ├── budgeting_engine/         deterministic Python math and rule checks
 │   ├── calculations.py       exact facts: totals, deficit, emergency-fund months
 │   ├── allocation.py         the budgeting rules; never exceeds income
 │   ├── planner.py            the full rule-based plan without the AI (fast)
 │   ├── insights.py           plain-language facts for the AI and action steps for the user
+│   ├── spending.py           calculates and compares recorded expenses
 │   └── validation.py         missing-data detection and AI advice clean-up
 ├── dataset/                  412 household scenarios with expected budgets
 │   ├── generate_dataset.py   builds the scenarios (same seed = same files)
@@ -92,7 +95,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item .env.example .env
-ollama pull qwen3.5:2b-q4_K_M
+ollama pull qwen3.5:4b-q4_K_M
 ```
 
 ## Daily use
@@ -105,6 +108,22 @@ python try_budgetai.py  # BudgetAI on four sample households (uses the model)
 python dataset/validate_dataset.py   # check the dataset
 pytest                  # automated tests (no Ollama needed)
 ```
+
+In Windows Command Prompt, run the setup check and a sample budget with the
+project's Python executable. Open Ollama before running these commands.
+
+```bat
+cd /d "%USERPROFILE%\Documents\BudgetAI_Model"
+.\.venv\Scripts\python.exe check_setup.py
+.\.venv\Scripts\python.exe try_budgetai.py 1
+.\.venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
+```
+
+On an existing installation, back up `.env` before editing it. Set
+`BUDGETAI_MODEL=qwen3.5:4b-q4_K_M` and `BUDGETAI_CONTEXT_TOKENS=4096`, then restart
+the API. To compare with the old model for one CMD session, use
+`set "BUDGETAI_MODEL=qwen3.5:2b-q4_K_M"` before running the same commands.
+Run `ollama ps` after a reply to inspect GPU usage and the context length.
 
 ## Phase 6 evaluation
 
@@ -160,7 +179,7 @@ and response schemas and try a budget in the [interactive API docs](http://127.0
 |---|---|
 | `GET /health` | `200` with `{"status":"ok"}` when the API is running. |
 | `POST /budget` | `200` with the budget, verified facts, action steps, and advice. Valid incomplete profiles also return `200` with `missing_data`. |
-| `POST /chat` | Ask about a budget or compare a hypothetical expense change. |
+| `POST /chat` | Ask about a budget, analyze recorded expenses, or compare a hypothetical expense change. |
 | `GET /openapi.json` | The machine-readable API contract. |
 
 Send a sample request from a second PowerShell terminal.
@@ -181,12 +200,13 @@ Invoke-RestMethod -Uri http://127.0.0.1:8000/budget -Method Post `
 Malformed JSON and invalid profiles return `422` with field locations and
 validation messages. An unavailable Ollama server or model returns `503`.
 An unusable model reply or another upstream model failure returns `502`.
-Budget responses use `Cache-Control: no-store`.
+A model timeout returns `504` with code `model_timeout`. Budget and chat responses
+use `Cache-Control: no-store`.
 
 ### Budget chat
 
-In the interactive docs, open **POST /chat**, click **Try it out**, and pick the
-budget question or rent increase example. A chat request takes the same household
+In the interactive docs, open **POST /chat**, click **Try it out**, and pick a
+budget, rent increase, or recorded spending example. A chat request takes the same household
 profile as `/budget`, plus a `message`. The response includes a `reply` and the
 current `plan`.
 
@@ -201,6 +221,45 @@ For follow-up questions, send up to eight recent messages in `history`. Each
 entry has a `role` of `user` or `assistant` and a `content` string. BudgetAI keeps
 this history in the request and leaves conversation storage to the calling app.
 
+#### Recorded expenses
+
+Send an optional `records` object when replying about actual spending.
+
+```json
+{
+  "as_of": "2026-11-19",
+  "coverage_start": "2026-10-01",
+  "transactions": [
+    {"posted_on": "2026-10-10", "name": "Electricity", "category": "utilities", "amount": 2200},
+    {"posted_on": "2026-11-10", "name": "Electricity", "category": "utilities", "amount": 2800},
+    {"posted_on": "2026-11-15", "name": "Groceries", "category": "food", "amount": 5800}
+  ],
+  "category_limits": {"food": 5000}
+}
+```
+
+The app supplies complete posted expense coverage between `coverage_start` and
+`as_of`, inclusive, for the signed-in household. Send only the dates needed for
+the question. `category_limits` optionally provides the current month's limits.
+Use the same currency across the profile and its records. An empty covered
+period has zero recorded expenses. For incomplete periods, chat asks for the
+missing records. A month-to-month comparison uses matching days where possible,
+and a question about last month's total alone uses the full calendar month.
+
+The API processes each request independently. A production calling app retrieves
+records using its own authenticated user scope. The BahayBulsa preview keeps a
+separate in-memory dashboard for each browser session. The chat model receives
+the question, short recent conversation context, and relevant labels. Python
+calculates the amounts and writes the spending reply. Bill comparisons can show
+the change in recorded cost, and the bill itself is needed to verify the cause.
+
+To run automated tests and the five existing advice regression cases in CMD:
+
+```bat
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m evaluation.evaluate_model --set regression --label qwen35-4b
+```
+
 ## Phase 8 deployment
 
 GitHub Actions tests the project and publishes the BudgetAI container to GitHub's
@@ -213,11 +272,11 @@ to publish an image, start the services, and verify them from another device.
 | Setting | Default | Meaning |
 |---|---|---|
 | `OLLAMA_HOST` | `http://localhost:11434` | Where Ollama runs. localhost = this computer only. |
-| `BUDGETAI_MODEL` | `qwen3.5:2b-q4_K_M` | AI model name (must appear in `ollama list`). |
+| `BUDGETAI_MODEL` | `qwen3.5:4b-q4_K_M` | Ollama model tag (must appear in `ollama list`). |
 | `BUDGETAI_CURRENCY` | `PHP` | Currency for all amounts. |
 | `BUDGETAI_TEMPERATURE` | `0` | Answer randomness; 0 = most predictable. |
 | `BUDGETAI_TIMEOUT_SECONDS` | `120` | Seconds to wait for the AI. |
-| `BUDGETAI_CONTEXT_TOKENS` | `8192` | How much text the model can read at once (prompt + answer). |
+| `BUDGETAI_CONTEXT_TOKENS` | `4096` | Context window in tokens. Larger windows use more memory. |
 
 ## Security notes
 

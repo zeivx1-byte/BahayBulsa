@@ -16,11 +16,11 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 DEFAULTS = {
     "OLLAMA_HOST": "http://localhost:11434",
-    "BUDGETAI_MODEL": "qwen3.5:2b-q4_K_M",
+    "BUDGETAI_MODEL": "qwen3.5:4b-q4_K_M",
     "BUDGETAI_CURRENCY": "PHP",
     "BUDGETAI_TEMPERATURE": "0",
     "BUDGETAI_TIMEOUT_SECONDS": "120",
-    "BUDGETAI_CONTEXT_TOKENS": "8192",
+    "BUDGETAI_CONTEXT_TOKENS": "4096",
 }
 
 

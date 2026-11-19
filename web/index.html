@@ -17,6 +17,22 @@
 
     <p id="dashboard-error" class="status-error" role="alert" hidden></p>
 
+    <details id="browser-account" class="panel account-panel" hidden>
+        <summary id="account-status">Account</summary>
+        <form id="account-form" hidden>
+            <label for="account-username">Username</label>
+            <input id="account-username" type="text" autocomplete="username" required>
+            <label for="account-password">Password</label>
+            <input id="account-password" type="password" autocomplete="current-password" required>
+            <div class="inline-actions">
+                <button name="account-action" value="login">Sign in</button>
+                <button name="account-action" value="register" class="button-secondary">Create account</button>
+            </div>
+        </form>
+        <button id="account-logout" type="button" class="button-secondary" hidden>Sign out</button>
+        <p id="account-error" class="status-error" role="alert" hidden></p>
+    </details>
+
     <!-- Summary Cards -->
     <section class="summary-grid">
         <div class="card">
@@ -38,13 +54,13 @@
         <div class="panel">
             <h3>Add Transaction</h3>
             <form id="tx-form" onsubmit="handleAddTransaction(event)">
-                <select id="tx-type" required>
+                <select id="tx-type" aria-label="Transaction type" required>
                     <option value="expense">Expense</option>
                     <option value="income">Income</option>
                 </select>
-                <input type="text" id="tx-category" placeholder="Category (e.g., Utilities, Groceries)" required>
-                <input type="number" id="tx-amount" step="0.01" placeholder="Amount" required>
-                <input type="date" id="tx-date" required>
+                <input type="text" id="tx-category" aria-label="Transaction category" placeholder="Category (e.g., Utilities, Groceries)" required>
+                <input type="number" id="tx-amount" aria-label="Transaction amount" step="0.01" placeholder="Amount" required>
+                <input type="date" id="tx-date" aria-label="Transaction date" required>
                 <button type="submit">Add Entry</button>
             </form>
 
@@ -54,9 +70,40 @@
                 <input type="text" id="bill-name" placeholder="Bill Name (e.g., Electric)" required>
                 <input type="number" id="bill-amount" step="0.01" placeholder="Amount" required>
                 <input type="date" id="bill-date" required>
+                <label id="bill-recurring-control" hidden><input type="checkbox" id="bill-recurring"> Repeat monthly</label>
                 <button type="submit">Queue Bill</button>
             </form>
             <ul id="bill-list"></ul>
+
+            <section id="budget-settings" aria-labelledby="budget-heading" hidden>
+                <hr>
+                <h3 id="budget-heading">Monthly Budget</h3>
+                <form id="budget-form">
+                    <label for="budget-month">Budget month</label>
+                    <input type="month" id="budget-month" required>
+                    <fieldset id="budget-values" disabled>
+                        <label for="budget-limit">Monthly limit (₱)</label>
+                        <input type="number" id="budget-limit" min="0" max="100000000" step="0.01" placeholder="No limit set">
+                        <details>
+                            <summary>Category limits</summary>
+                            <div id="budget-category-limits" class="budget-fields"></div>
+                        </details>
+                        <details>
+                            <summary>Savings goal</summary>
+                            <div class="budget-fields">
+                                <label for="goal-name">Goal name</label>
+                                <input type="text" id="goal-name" maxlength="80">
+                                <label for="goal-target">Target (₱)</label>
+                                <input type="number" id="goal-target" min="0.01" max="100000000" step="0.01">
+                                <label for="goal-saved">Already saved (₱)</label>
+                                <input type="number" id="goal-saved" min="0" max="100000000" step="0.01">
+                            </div>
+                        </details>
+                        <button type="submit">Save budget</button>
+                    </fieldset>
+                    <span id="budget-status" role="status"></span>
+                </form>
+            </section>
         </div>
 
         <!-- Right Column: Transaction Ledger & Algorithm Benchmark -->
@@ -99,13 +146,20 @@
 
     <section id="budget-chat" class="panel chat-panel" aria-labelledby="chat-heading" hidden>
         <h2 id="chat-heading">Chat with BudgetAI</h2>
-        <p>Chat uses a sample household with ₱30,000 monthly income, ₱10,000 rent, and ₱8,000 for groceries. Your ledger is separate.</p>
-        <div id="chat-thread" class="chat-thread" role="log" aria-label="Chat conversation"></div>
+        <label for="chat-source">Budget source</label>
+        <select id="chat-source" aria-describedby="chat-context">
+            <option value="dashboard">My dashboard</option>
+            <option value="demo">Sample household</option>
+        </select>
+        <p id="chat-context"></p>
+        <div id="chat-thread-demo" class="chat-thread" role="log" aria-label="Sample household conversation"></div>
+        <div id="chat-thread-dashboard" class="chat-thread" role="log" aria-label="Dashboard conversation" hidden></div>
         <form id="chat-form">
             <label for="chat-message">Ask a budget question</label>
             <textarea id="chat-message" rows="2" maxlength="1000" placeholder="What if my rent goes up by ₱2,000?" required></textarea>
             <div class="chat-actions">
                 <button id="chat-send" type="submit">Send question</button>
+                <button id="chat-reset" type="button" class="button-secondary">New chat</button>
                 <span id="chat-status" role="status"></span>
             </div>
         </form>

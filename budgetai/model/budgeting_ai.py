@@ -17,10 +17,12 @@ Nothing here changes the model's weights: this is prompt engineering.
 """
 import re
 import time
+from collections.abc import Iterable
 from copy import deepcopy
 from pathlib import Path
 from typing import Union
 
+import httpx
 import ollama
 from pydantic import ValidationError
 
@@ -31,12 +33,16 @@ from budgeting_engine.planner import make_plan
 from budgeting_engine.validation import (
     adjustable_expenses, clean_ai_advice, data_notes, expense_review_tip, mentions_quantity, partial_plan_summary,
 )
-from model.budget_chat import answer_chat
-from model.schemas import AIBudgetAdvice, BudgetPlan, BudgetResult, ChatFocus, ChatRequest, ChatResponse, FinancialProfile
+from model.budget_chat import answer_chat, answer_ledger_chat
+from model.schemas import (
+    AIBudgetAdvice, BudgetPlan, BudgetResult, ChatFocus, ChatRequest, ChatResponse, FinancialProfile, LedgerChatRequest,
+    LedgerChatResponse,
+)
 
 TOLERANCE = 0.01          # one centavo
 MAX_FORMAT_ATTEMPTS = 3   # tries to get a reply in the correct JSON format
 MAX_ANSWER_TOKENS = 900   # upper limit on the length of one AI answer
+MAX_CHAT_FOCUS_TOKENS = 160
 RETRY_TEMPERATURE = 0.3   # a little variety on retries, so the answer changes
 ANSWER_SCHEMA = AIBudgetAdvice.model_json_schema()
 CHAT_FOCUS_SCHEMA = ChatFocus.model_json_schema()
@@ -98,10 +104,10 @@ def _reply_format(profile: FinancialProfile, plan: BudgetPlan) -> dict:
     schema = deepcopy(ANSWER_SCHEMA)
     fields = schema["properties"]
     warnings = _verified_warnings(profile, plan)
-    fields["warnings"]["maxItems"] = len(warnings)
+    fields["warnings"]["maxItems"] = min(3, len(warnings))
     if warnings:
         fields["warnings"]["items"]["enum"] = [THOUSANDS_COMMA.sub(r"\1", warning) for warning in warnings]
-    fields["missing_information"]["maxItems"] = len(plan.missing_data)
+    fields["missing_information"]["maxItems"] = min(3, len(plan.missing_data))
 
     adjustable = adjustable_expenses(profile)
     fields["spending_flags"]["maxItems"] = int(bool(adjustable))
@@ -112,12 +118,29 @@ def _reply_format(profile: FinancialProfile, plan: BudgetPlan) -> dict:
     return schema
 
 
+def _prompt_list(items: Iterable[str], byte_limit: int) -> str:
+    """Keep whole facts in the model prompt. The API response still has the full plan."""
+    lines = []
+    for item in items:
+        line = f"- {item}"
+        byte_limit -= len(line.encode("utf-8")) + 1
+        if byte_limit < 0:
+            lines.append("Additional details are in the full Python plan.")
+            break
+        lines.append(line)
+    return "\n".join(lines) or "none"
+
+
 class BudgetAIError(Exception):
     """A problem in BudgetAI. The message says what to do."""
 
 
 class ModelUnavailableError(BudgetAIError):
-    """Ollama is not running, or the model is not downloaded."""
+    """Ollama is unreachable, or the model failed to load."""
+
+
+class ModelTimeoutError(BudgetAIError):
+    """Ollama did not complete the request within the configured timeout."""
 
 
 class InvalidModelResponseError(BudgetAIError):
@@ -167,15 +190,20 @@ class BudgetAI:
         return self._build_result(plan, advice, cleanup, attempts, time.perf_counter() - start)
 
     def respond_to_chat(self, request: ChatRequest) -> ChatResponse:
-        """Reply with verified planner facts or a separate what-if plan."""
+        """Reply with verified planner or spending facts, or a separate what-if plan."""
         return answer_chat(request, self.settings.currency, self._choose_chat_focus)
+
+    def respond_to_ledger_chat(self, request: LedgerChatRequest) -> LedgerChatResponse:
+        """Answer from the website's request-local financial and conversation context."""
+        return answer_ledger_chat(request, self.settings.currency, self._choose_chat_focus)
 
     # ------------------------------------------------------------ talking to the model
     def _choose_chat_focus(self, messages: list[dict[str, str]]) -> ChatFocus:
         for attempt in range(MAX_FORMAT_ATTEMPTS):
             temperature = self.settings.temperature if attempt == 0 else max(self.settings.temperature, RETRY_TEMPERATURE)
             try:
-                return ChatFocus.model_validate_json(self._chat(messages, temperature, CHAT_FOCUS_SCHEMA))
+                raw = self._chat(messages, temperature, CHAT_FOCUS_SCHEMA, MAX_CHAT_FOCUS_TOKENS)
+                return ChatFocus.model_validate_json(raw)
             except (ValidationError, InvalidModelResponseError):
                 continue
         raise InvalidModelResponseError("The model could not select a budget detail to explain.")
@@ -202,7 +230,7 @@ class BudgetAI:
             f"The model gave an invalid answer {MAX_FORMAT_ATTEMPTS} times in a row. Last problem: {problem}"
         )
 
-    def _chat(self, messages: list, temperature: float, reply_format: dict) -> str:
+    def _chat(self, messages: list, temperature: float, reply_format: dict, max_tokens: int = MAX_ANSWER_TOKENS) -> str:
         """Send one request to Ollama and return the reply text."""
         model = self.settings.model_name
         try:
@@ -213,20 +241,33 @@ class BudgetAI:
                 options={
                     "temperature": temperature,
                     "num_ctx": self.settings.context_tokens,
-                    "num_predict": MAX_ANSWER_TOKENS,
+                    "num_predict": max_tokens,
                 },
                 think=False,
             )
-        except ConnectionError:
+        except (TimeoutError, httpx.TimeoutException):
+            raise ModelTimeoutError(
+                f"Ollama took too long to answer using {model}. Check BUDGETAI_TIMEOUT_SECONDS in .env."
+            ) from None
+        except (ConnectionError, httpx.TransportError):
             raise ModelUnavailableError(
                 f"Cannot reach Ollama at {self.settings.ollama_host}. Open Ollama from the Start menu and try again."
             ) from None
         except ollama.ResponseError as exc:
             if exc.status_code == 404:
                 raise ModelUnavailableError(f"Model {model} is not downloaded. Run:  ollama pull {model}") from None
-            if "token repeat limit reached" in exc.error.lower():
+            error = str(exc.error).lower()
+            if exc.status_code == 504:
+                raise ModelTimeoutError("Ollama timed out. Check BUDGETAI_TIMEOUT_SECONDS in .env.") from None
+            if exc.status_code in {503, 507} or any(phrase in error for phrase in (
+                "failed to load model", "unable to load model", "requires more system memory", "out of memory",
+            )):
+                raise ModelUnavailableError(
+                    f"Ollama could not load {model}. Check available memory and BUDGETAI_CONTEXT_TOKENS."
+                ) from None
+            if "token repeat limit reached" in error:
                 raise InvalidModelResponseError("The model stalled while writing its reply.") from None
-            raise BudgetAIError(f"Ollama returned an error: {exc.error}") from None
+            raise BudgetAIError(f"Ollama returned HTTP {exc.status_code} while using {model}.") from None
         except Exception as exc:
             raise BudgetAIError(
                 f"The AI request failed ({type(exc).__name__}: {exc}). "
@@ -240,22 +281,22 @@ class BudgetAI:
         cur = self.settings.currency
         facts, lines, notes, missing = plan.facts, plan.budget, plan.rule_notes, plan.missing_data
         if lines:
-            budget = "\n".join(
-                f"- {line.name} | funded {plain(line.amount)}"
+            budget_items = (
+                f"{line.name} | funded {plain(line.amount)}"
                 + (f" | needed {plain(line.needed_amount)}" if line.amount < line.needed_amount else "")
-                for line in sorted(lines, key=lambda l: l.priority)
+                for line in sorted(lines, key=lambda l: (l.priority, -l.needed_amount))
             )
+            budget = _prompt_list(budget_items, 1400)
             budget += f"\nTotal funded: {plain(plan.total_allocated)} of {plain(facts.planning_income)} income"
         else:
             budget = "none (no expenses are listed yet)"
-        fact_sentences = key_facts(profile, facts)
-        facts_text = "\n".join(f"- {sentence}" for sentence in fact_sentences)
-        warnings_text = "\n".join(f"- {warning}" for warning in _verified_warnings(profile, plan)) or "none"
-        expense_text = "\n".join(f"- {expense.name} | current {plain(expense.monthly_amount)} | "
-                                 f"reason: {expense_review_tip(expense)}"
-                                 for expense in adjustable_expenses(profile)) or "none"
-        notes_text = "\n".join(f"- {n}" for n in notes) if notes else "none"
-        missing_text = "\n".join(f"- {m}" for m in missing) if missing else "none"
+        facts_text = _prompt_list(key_facts(profile, facts), 1200)
+        warnings_text = _prompt_list(_verified_warnings(profile, plan), 650)
+        expense_items = (f"{expense.name} | current {plain(expense.monthly_amount)} | reason: {expense_review_tip(expense)}"
+                         for expense in adjustable_expenses(profile))
+        expense_text = _prompt_list(expense_items, 650)
+        notes_text = _prompt_list(notes, 450)
+        missing_text = _prompt_list(missing, 450)
         if plan.is_partial:
             summary_focus = 'Start with "This is a partial plan". Explain which minimum debt payments it covers.'
         else:
@@ -301,15 +342,19 @@ class BudgetAI:
                        else "List your monthly expenses so BudgetAI can build your budget.")
             savings = "Add your expenses so you can see how much will be available for savings."
         elif facts.is_deficit:
-            summary = ("Monthly income does not cover required spending. This budget prioritizes essentials "
-                       "and shows how much of each bill can be paid.")
+            summary = ("Monthly income does not cover required spending. "
+                       f"The shortfall is {plan.currency} {facts.shortfall:,.2f}, so the plan puts essentials first.")
             savings = ("Follow the budget for your essentials first. Look for lower variable costs or extra income "
                        "to close the gap.")
         else:
             summary = (f"Monthly planning income of {plan.currency} {facts.planning_income:,.2f} covers "
                        f"{plan.currency} {facts.required_spending:,.2f} in required spending. ")
-            summary += ("Little remains after those costs." if facts.situation == "tight" else
-                        "See the budget for amounts assigned to other priorities.")
+            priority = next((line for line in plan.budget if line.source == "rule" and line.amount > 0
+                             and line.category in {"emergency_fund", "debt_payment", "savings_goal"}), None)
+            if priority is not None:
+                summary += f"The plan sets aside {plan.currency} {priority.amount:,.2f} for {priority.name}."
+            elif facts.situation == "tight":
+                summary += "Little remains after those costs."
             if plan.unallocated <= 0 and _assumes_unallocated_money(savings):
                 savings = ("All planning income is assigned in this budget. Follow its allocations. "
                            "Before increasing savings or debt payments, reduce a planned cost or add income.")
