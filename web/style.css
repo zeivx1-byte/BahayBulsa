@@ -14,7 +14,19 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 16px;
     margin-bottom: 20px;
+}
+
+.topbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+}
+
+.topbar-actions a {
+    color: #1d4ed8;
 }
 
 .summary-grid {
@@ -43,7 +55,7 @@ form {
     gap: 10px;
 }
 
-input, select, button {
+input, select, button, textarea {
     padding: 9px 12px;
     border: 1px solid #ccc;
     border-radius: 5px;
@@ -79,4 +91,62 @@ th, td {
     justify-content: space-between;
     align-items: center;
     gap: 10px;
+}
+
+.table-scroll {
+    overflow-x: auto;
+}
+
+.chat-panel {
+    margin-top: 20px;
+}
+
+.chat-panel h2 {
+    margin-top: 0;
+}
+
+.chat-thread:not(:empty) {
+    max-height: 400px;
+    overflow-y: auto;
+    margin-bottom: 16px;
+}
+
+.chat-turn {
+    max-width: 70ch;
+    padding: 10px 12px;
+    margin: 0 0 8px;
+    border-radius: 8px;
+    background-color: #f4f6f9;
+    overflow-wrap: anywhere;
+}
+
+.chat-turn p {
+    margin: 4px 0 0;
+    white-space: pre-wrap;
+}
+
+.chat-turn-user {
+    margin-left: auto;
+    background-color: #eaf1ff;
+}
+
+.chat-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+
+.status-error {
+    color: #991b1b;
+}
+
+@media (max-width: 750px) {
+    .topbar, .ledger-header {
+        flex-wrap: wrap;
+    }
+
+    .summary-grid, .main-grid {
+        grid-template-columns: 1fr;
+    }
 }

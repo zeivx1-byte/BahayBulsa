@@ -1,4 +1,3 @@
-import webview
 from storage import load_data, save_data
 from data_structures import CategoryHashMap, UndoStack, BillPriorityQueue
 from algorithms import merge_sort, insertion_sort, run_benchmark
@@ -6,14 +5,16 @@ from algorithms import merge_sort, insertion_sort, run_benchmark
 
 class BudgetOrganizerAPI:
     """
-    Exposes Python backend methods to the HTML/CSS frontend via PyWebView.
+    Manages the transaction ledger, upcoming bills, and summary totals.
     """
 
-    def __init__(self):
+    def __init__(self, *, persist=True):
         # 1. Load saved records from local JSON storage
-        saved_state = load_data()
+        self.persist = persist
+        saved_state = load_data() if persist else {}
         self.transactions = saved_state.get("transactions", [])
         self.savings_goal = saved_state.get("savings_goal", 10000.0)
+        self._next_transaction_id = max((tx["id"] for tx in self.transactions), default=0) + 1
 
         # 2. Initialize your 3 syllabus data structures
         self.category_map = CategoryHashMap()       # Data Structure 1: Hash Map
@@ -54,7 +55,7 @@ class BudgetOrganizerAPI:
     def add_transaction(self, category, amount, tx_type, date, note=""):
         """Adds a new income or expense entry and pushes action to UndoStack."""
         tx = {
-            "id": len(self.transactions) + 1,
+            "id": self._next_transaction_id,
             "category": category,
             "amount": float(amount),
             "type": tx_type,  # "income" or "expense"
@@ -62,6 +63,7 @@ class BudgetOrganizerAPI:
             "note": note
         }
 
+        self._next_transaction_id += 1
         self.transactions.append(tx)
         if tx_type == "expense":
             self.category_map.add_expense(category, tx["amount"])
@@ -121,16 +123,19 @@ class BudgetOrganizerAPI:
 
     def _persist(self):
         """Saves current transactions and savings goal to disk."""
-        save_data({
-            "transactions": self.transactions,
-            "savings_goal": self.savings_goal
-        })
+        if self.persist:
+            save_data({
+                "transactions": self.transactions,
+                "savings_goal": self.savings_goal
+            })
 
 
 # ---------------------------------------------------------
 # DESKTOP WINDOW ENTRY POINT
 # ---------------------------------------------------------
 if __name__ == "__main__":
+    import webview
+
     api = BudgetOrganizerAPI()
 
     window = webview.create_window(

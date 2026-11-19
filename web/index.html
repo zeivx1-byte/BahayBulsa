@@ -9,8 +9,13 @@
 <body>
     <header class="topbar">
         <h1>Household Expense Budget Organizer</h1>
-        <button id="undo-btn" onclick="handleUndo()" disabled>Undo Last Action</button>
+        <div class="topbar-actions">
+            <a id="chat-link" href="#budget-chat" hidden>Chat with BudgetAI</a>
+            <button id="undo-btn" onclick="handleUndo()" disabled>Undo Last Action</button>
+        </div>
     </header>
+
+    <p id="dashboard-error" class="status-error" role="alert" hidden></p>
 
     <!-- Summary Cards -->
     <section class="summary-grid">
@@ -63,18 +68,20 @@
                     <button onclick="handleSort('insertion')">Insertion Sort</button>
                 </div>
             </div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Date</th>
-                        <th>Type</th>
-                        <th>Category</th>
-                        <th>Amount</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody id="tx-table-body"></tbody>
-            </table>
+            <div class="table-scroll">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Category</th>
+                            <th>Amount</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tx-table-body"></tbody>
+                </table>
+            </div>
 
             <hr>
             <h3>Algorithm Runtime Benchmark</h3>
@@ -89,6 +96,20 @@
             <p id="bench-result">Select a dataset size and click Run Benchmark.</p>
         </div>
     </main>
+
+    <section id="budget-chat" class="panel chat-panel" aria-labelledby="chat-heading" hidden>
+        <h2 id="chat-heading">Chat with BudgetAI</h2>
+        <p>Chat uses a sample household with ₱30,000 monthly income, ₱10,000 rent, and ₱8,000 for groceries. Your ledger is separate.</p>
+        <div id="chat-thread" class="chat-thread" role="log" aria-label="Chat conversation"></div>
+        <form id="chat-form">
+            <label for="chat-message">Ask a budget question</label>
+            <textarea id="chat-message" rows="2" maxlength="1000" placeholder="What if my rent goes up by ₱2,000?" required></textarea>
+            <div class="chat-actions">
+                <button id="chat-send" type="submit">Send question</button>
+                <span id="chat-status" role="status"></span>
+            </div>
+        </form>
+    </section>
 
     <script src="app.js"></script>
 </body>
