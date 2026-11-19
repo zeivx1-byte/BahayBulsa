@@ -34,9 +34,6 @@ spending questions as soon as you have posted expenses. For trends, add prior
 month records. The site saves the eight latest dashboard chat turns and a short
 reference for follow-up questions.
 
-The [website AI audit](AI_WEBSITE_AUDIT.md) records the tested browser scenarios,
-API changes, measured performance, and remaining limits.
-
 ## Try BahayBulsa in GitHub Codespaces
 
 1. [Create a Codespace from BahayBulsa's default branch](https://codespaces.new/zeivx1-byte/BahayBulsa).
