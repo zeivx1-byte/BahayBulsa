@@ -305,7 +305,7 @@ class ChatMemory(_Strict):
 
     topic: Literal[
         "spending", "largest_category", "transaction", "expense_trend", "spending_comparison", "income",
-        "monthly_budget", "category_limit",
+        "monthly_budget", "category_limit", "income_and_expenses",
     ]
     category: ExpenseCategory | None = None
     expense_name: str | None = Field(default=None, min_length=1, max_length=80)
@@ -337,7 +337,7 @@ class ChatFocus(_Strict):
         "summary", "line", "remaining", "next_steps", "missing_information", "clarify", "off_topic",
         "spending", "largest_category", "category_limit", "spending_comparison", "expense_trend",
         "reduce_expenses", "savings_goal", "unusual_spending", "transaction", "monthly_budget",
-        "income", "upcoming_bills", "recurring_bills",
+        "income", "income_and_expenses", "upcoming_bills", "recurring_bills",
     ]
     line_index: int | None = Field(default=None, ge=0)
     target_index: int | None = Field(default=None, ge=0)

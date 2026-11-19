@@ -2,8 +2,11 @@
 
 import json
 import re
+from calendar import month_abbr, month_name
 from collections.abc import Callable, Iterable
+from datetime import date, timedelta
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import ValidationError
 
@@ -27,6 +30,13 @@ _LAST_MONTH_BILL = re.compile(r"(?:how much was|what was) (?:that|this) (?:bill|
                              re.IGNORECASE)
 _MONTH = re.compile(r"\b(?:this|current|last|previous) month\b|\bmonth[- ]to[- ]date\b", re.IGNORECASE)
 _LAST_MONTH = re.compile(r"\b(?:last|previous) month\b", re.IGNORECASE)
+_MONTH_NUMBERS = {name.casefold(): number for names in (month_name, month_abbr)
+                  for number, name in enumerate(names) if name}
+_NAMED_MONTH = re.compile(
+    rf"\b(?:in|for|during|month of|versus|vs\.?|with|to)\s+"
+    rf"({'|'.join(map(re.escape, _MONTH_NUMBERS))})(?:\.?\s+([0-9]{{4}}))?\b",
+    re.IGNORECASE,
+)
 _PERIOD_FOLLOW_UP = re.compile(r"(?:(?:what about|how about|and) )?(?:this|last|previous) month[?!.]*",
                               re.IGNORECASE)
 _DIFFERENCE_FOLLOW_UP = re.compile(
@@ -47,6 +57,13 @@ _FINANCE_TERMS = re.compile(
     re.IGNORECASE,
 )
 _INCOME_TERMS = re.compile(r"\b(?:income|earn\w*|salary|wages)\b", re.IGNORECASE)
+_INCOME_WORDS = r"(?:income|earnings|salary|wages|earn|earned)"
+_EXPENSE_WORDS = r"(?:expenses?|spending|spend|spent)"
+_JOIN_TOTALS = r"\s+(?:and|&|versus|vs\.?)\s+(?:(?:my|recorded|total|current|monthly)\s+)*"
+_INCOME_AND_EXPENSES = re.compile(
+    rf"\b(?:{_INCOME_WORDS}{_JOIN_TOTALS}{_EXPENSE_WORDS}|{_EXPENSE_WORDS}{_JOIN_TOTALS}{_INCOME_WORDS})\b",
+    re.IGNORECASE,
+)
 _INCOME_AMOUNT = re.compile(
     r"\b(?:how much (?:income|did i earn|have i earned)|total income|recorded income|income (?:this|last) month)\b",
     re.IGNORECASE,
@@ -91,10 +108,11 @@ _QUESTION_INSTRUCTIONS = (
     "Select spending for actual expenses in a period (optionally a category); largest_category for which category "
     "consumes most of the budget or where most money went; category_limit for spending versus a category budget; "
     "monthly_budget for recorded spending versus the overall monthly budget; "
-    "spending_comparison for total spending this month vs last; "
+    "spending_comparison only for a spending comparison across periods; "
     "expense_trend for changes in a named bill or category; transaction for payments by expense name; "
     "unusual_spending for the biggest category increase; reduce_expenses for what to cut; savings_goal for goal progress. "
-    "Use income for recorded earnings, upcoming_bills for what is due, and recurring_bills for regular charges. "
+    "Use income for recorded earnings and income_and_expenses for both totals in one period. "
+    "Use upcoming_bills for what is due and recurring_bills for regular charges. "
     "For these topics use target_index only when a matching target is needed: category_limit needs a category, "
     "expense_trend needs an expense or category, transaction needs an expense, and savings_goal needs a goal. "
     "For an upcoming or recurring bill by name, choose a bill label. "
@@ -107,7 +125,7 @@ _QUESTION_INSTRUCTIONS = (
     "Use clarify if the intent is ambiguous or off_topic if unrelated. Use only listed indices."
 )
 _MEMORY_TOPICS = frozenset({"spending", "largest_category", "transaction", "expense_trend", "spending_comparison",
-                            "income", "monthly_budget", "category_limit"})
+                            "income", "income_and_expenses", "monthly_budget", "category_limit"})
 
 
 class ScenarioError(ValueError):
@@ -159,7 +177,15 @@ def _answer_chat(
     is_ledger_chat = isinstance(request, LedgerChatRequest)
     memory = request.memory if is_ledger_chat else None
     category = _named_category(request.message)
-    shortcut = _recorded_shortcut(request.message, category, memory, is_ledger_chat)
+    if (category is None and _INCOME_AND_EXPENSES.search(request.message)
+            and len(_MONTH.findall(request.message)) + len(_NAMED_MONTH.findall(request.message)) <= 1):
+        period = _totals_period(request.message, records)
+        if period is None:
+            return LedgerChatResponse(reply="I can show recorded totals for this month or last month. Which would you like?",
+                                      plan=plan)
+        shortcut = ChatFocus(topic="income_and_expenses", period=period), None
+    else:
+        shortcut = _recorded_shortcut(request.message, category, memory, is_ledger_chat)
     if shortcut is not None:
         focus, target = shortcut
         if focus.topic == "clarify":
@@ -243,6 +269,20 @@ def _named_category(message: str) -> str | None:
     selected = [name for name in CATEGORIES
                 if re.search(rf"(?<!\w){re.escape(category_label(name))}(?!\w)", message, re.IGNORECASE)]
     return selected[0] if len(selected) == 1 else None
+
+
+def _totals_period(message: str, records: SpendingRecords | None) -> Literal["current", "previous"] | None:
+    named = _NAMED_MONTH.search(message)
+    if named is None or records is None:
+        return "previous" if _LAST_MONTH.search(message) else "current"
+    month = _MONTH_NUMBERS[named[1].casefold()]
+    year = int(named[2]) if named[2] else None
+    current = records.as_of.replace(day=1)
+    previous = current - timedelta(days=1) if current > date.min else None
+    for period, day in (("current", current), ("previous", previous)):
+        if day is not None and day.month == month and (year is None or day.year == year):
+            return period
+    return None
 
 
 def _recorded_shortcut(

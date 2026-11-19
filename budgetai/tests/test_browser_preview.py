@@ -147,6 +147,26 @@ def register(client, username, password="fictional-password"):
     assert result.headers["Cache-Control"] == "no-store"
 
 
+def test_website_answers_november_income_and_expenses_without_prior_records(preview):
+    app, transport = preview
+    transport.focus = {"topic": "spending_comparison"}
+    with TestClient(app) as client:
+        register(client, "november_test")
+        add(client, "Salary", 42_000, "income", "2025-11-03")
+        add(client, "Groceries", 2_300, day="2025-11-04")
+        add(client, "Rent", 12_500, day="2025-11-06")
+        add(client, "Groceries", 600, day="2025-11-21")
+        response = client.post("/api/preview-chat", json={
+            "message": "check my current expenses and income for the month of november",
+            "as_of": "2025-11-19",
+        })
+        assert response.status_code == 200
+        assert response.json()["reply"] == (
+            "For Nov 1–19, 2025, you recorded PHP 42,000.00 in income and PHP 14,800.00 in expenses."
+        )
+        assert not transport.calls
+
+
 def test_signed_in_dashboard_budget_and_chat_are_isolated_and_restore_after_login(preview):
     app, _ = preview
     first_question = "How much did I spend on food this month?"

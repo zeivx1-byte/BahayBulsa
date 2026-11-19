@@ -15,7 +15,7 @@ CATEGORIES = get_args(ExpenseCategory)
 SPENDING_TOPICS = frozenset({
     "spending", "largest_category", "category_limit", "spending_comparison", "expense_trend",
     "reduce_expenses", "unusual_spending", "transaction", "monthly_budget", "income",
-    "upcoming_bills", "recurring_bills",
+    "income_and_expenses", "upcoming_bills", "recurring_bills",
 })
 _ZERO = Decimal("0.00")
 
@@ -54,6 +54,8 @@ def explain_spending(
     topic = focus.topic
     if topic == "income":
         return _income(focus.period, records, currency)
+    if topic == "income_and_expenses":
+        return _income_and_expenses(focus.period, summary, records, currency)
     if topic in {"upcoming_bills", "recurring_bills"}:
         return _bills(topic, target, records, currency)
     if topic == "reduce_expenses":
@@ -117,6 +119,27 @@ def _income(period: str, records: SpendingRecords | None, currency: str) -> str:
         if amount is not None:
             return f"You recorded {_amount(currency, amount)} in income for {_month_through(end)}."
     return "I need dated income records for that month to give you a recorded total."
+
+
+def _income_and_expenses(
+    period: str, summary: SpendingSummary | None, records: SpendingRecords | None, currency: str,
+) -> str:
+    if summary is None or records is None:
+        return "Add dated income and expense entries to see your recorded monthly totals."
+    previous = period == "previous"
+    spending = summary.previous_full if previous else summary.current
+    if spending is None:
+        return "Add records covering the requested month from its first day to see both totals."
+    dates = _dates(spending)
+    income = records.previous_income_total if previous else records.income_total
+    if income is not None and spending.by_category:
+        return (f"For {dates}, you recorded {_amount(currency, income)} in income and "
+                f"{_amount(currency, spending.total)} in expenses.")
+    if income is not None:
+        return f"For {dates}, you recorded {_amount(currency, income)} in income. There are no recorded expenses for that period."
+    if spending.by_category:
+        return f"For {dates}, you recorded {_amount(currency, spending.total)} in expenses. There is no recorded income for that period."
+    return f"There are no recorded income or expense entries for {dates}."
 
 
 def _bills(

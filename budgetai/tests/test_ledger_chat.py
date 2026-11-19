@@ -64,6 +64,35 @@ def test_explicit_current_month_total_uses_just_that_period():
     assert "Oct" not in result.reply
 
 
+def test_income_and_expenses_use_one_month_and_keep_the_followup_topic():
+    current = ask("check my current expenses and income for the month of november", no_inference)
+    assert "PHP 21,000.00 in income and PHP 6,300.00 in expenses" in current.reply
+    assert "Nov 1–19, 2026" in current.reply
+    assert current.memory.topic == "income_and_expenses"
+
+    previous = ask("What about last month?", no_inference, memory=current.memory)
+    assert "PHP 23,000.00 in income and PHP 3,300.00 in expenses" in previous.reply
+    assert "Oct 1–31, 2026" in previous.reply
+
+    named_previous = ask("Show my income and expenses for October 2026", no_inference)
+    assert named_previous.reply == previous.reply
+
+
+def test_combined_totals_handle_missing_records_and_an_unsupported_month():
+    question = "Show my income and expenses this month"
+    expenses_only = ask(question, no_inference, records={**RECORDS, "income_total": None})
+    assert "PHP 6,300.00 in expenses" in expenses_only.reply
+    assert "no recorded income" in expenses_only.reply
+    income_only = ask(question, no_inference, records={**RECORDS, "transactions": []})
+    assert "PHP 21,000.00 in income" in income_only.reply
+    assert "no recorded expenses" in income_only.reply
+    empty = ask(question, no_inference, records={**RECORDS, "income_total": None, "transactions": []})
+    assert "no recorded income or expense entries" in empty.reply
+
+    old_year = ask("Show my expenses and income in November 2025", no_inference)
+    assert "this month or last month" in old_year.reply
+
+
 def test_reference_requires_same_conversation_context():
     reply = ask("What about last month?", no_inference)
     assert "Which spending category" in reply.reply
